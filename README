@@ -1,0 +1,85 @@
+Amux
+=====
+
+Amux is an alsa IO plugin that multiplexes different PCM card and selects the
+one to use from a configuration file.
+
+/!\ This is still in development (see Limitations).
+
+Build
+-----
+
+Simply run:
+ $ make
+
+Everything is built in ./build directory.
+
+Configuration
+-------------
+
+In order to use this plugin you can write an asoundrc that looks like the
+following:
+
+----------------- 8< ------------------
+cat > ~/.asoundrc << EOF
+pcm_type.!amux {
+        lib {
+		@func getenv
+		vars [
+			AMUX_LIBRARY
+		]
+		default "./build/libasound_pcm_amux.so"
+	}
+}
+
+pcm.!usb {
+        type empty
+        slave {
+		pcm "cards.USB-Audio.pcm.default:CARD=1"
+        }
+}
+
+pcm.!default {
+        type amux
+        file /tmp/sndcard
+        list [
+                {
+                        pcm "sysdefault"
+                }
+                {
+                        pcm "usb"
+                }
+                {
+                        pcm "file:FILE=/tmp/audio-data.raw"
+                }
+                {
+                        pcm "null"
+                }
+        ]
+}
+EOF
+----------------- 8< ------------------
+
+This configure amux plugin to multiplex 4 PCM cards, the system default, an usb
+one, a fake file and a null PCM. The plugin will select the PCM card to use
+accordingly to /tmp/sndcard file.
+
+Usage
+-----
+
+To use this plugin, first select the soundcard index to use. For example
+with the previous configuration, if you want to use the usb card, use the
+following:
+ $ echo -n "1" > /tmp/sndcard
+
+Then test that everything works with:
+ $ export ALSA_CONFIG_PATH=<path-to-asoundrc>
+ $ export AMUX_LIBRARY=<path-to-libasound_pcm_amux.so>
+ $ aplay -f cd <file.wav>
+
+Limitations
+-----------
+
+ - Do not support live PCM switching yet.
+ - Only support playback
+ - There is no control plugin yet (to live switch default control card).

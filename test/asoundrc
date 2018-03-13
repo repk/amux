@@ -1,0 +1,66 @@
+</usr/share/alsa/alsa.conf>
+
+!@hooks [
+	{
+		func load
+		files [
+			{
+				@func concat
+				strings [
+					{ @func datadir }
+					"/alsa.conf.d/"
+				]
+			}
+		]
+		errors false
+	}
+]
+
+pcm_type.!amux {
+        lib {
+		@func getenv
+		vars [
+			AMUX_LIBRARY
+		]
+		default "./libasound_pcm_amux.so"
+	}
+}
+
+pcm.!usb {
+        type empty
+        slave {
+		pcm "cards.USB-Audio.pcm.default:CARD=1"
+        }
+}
+
+pcm.!parrotbt {
+	type plug
+	slave.pcm {
+		type bluealsa
+		interface "hci0"
+		device "A0:14:3D:6C:0D:89"
+		profile "a2dp"
+	}
+}
+
+pcm.!default {
+        type amux
+        file /tmp/sndcard
+        list [
+                {
+                        pcm "sysdefault"
+                }
+                {
+                        pcm "usb"
+                }
+                {
+                        pcm "parrotbt"
+                }
+                {
+                        pcm "file:FILE=/tmp/audio-data.raw"
+                }
+                {
+                        pcm "null"
+                }
+        ]
+}
