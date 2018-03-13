@@ -27,6 +27,7 @@
 #endif
 
 #define AMUX_ERR(...) fprintf(stderr, __VA_ARGS__)
+#define AMUX_WARN(...) fprintf(stdout, __VA_ARGS__)
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(s) (sizeof(s) / sizeof(*(s)))
@@ -183,7 +184,7 @@ static int amux_prepare(struct snd_pcm_ioplug *io)
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
 	if(amux_check_card(amx) != 0)
-		return -EPIPE;
+		return 0;
 
 #ifdef DEBUG
 	do {
@@ -361,6 +362,130 @@ out:
 }
 
 /**
+ * Configure new slave PCM
+ */
+static int amux_cfg_slave(struct snd_pcm_amux *amx, size_t idx)
+{
+	snd_pcm_hw_params_t *hw;
+	snd_pcm_sw_params_t *sw;
+	struct pollfd sfd[AMUX_POLLFD_MAX];
+	size_t i;
+	int snr, ret;
+
+	AMUX_DBG("%s: enter PCM(%p)\n", __func__, &amx->io);
+
+	if(idx > amx->slavenr) {
+		AMUX_ERR("%s: Index (%lu) invalid\n", __func__,
+				(unsigned long)idx);
+		return -EINVAL;
+	}
+
+	amx->idx = idx;
+	snd_pcm_drop(amx->slave);
+	snd_pcm_close(amx->slave);
+	ret = snd_pcm_open(&amx->slave, amx->sname[idx], amx->stream,
+			amx->mode);
+	if(ret != 0) {
+		AMUX_ERR("%s: snd_pcm_open error\n", __func__);
+		goto out;
+	}
+
+	snd_pcm_hw_params_alloca(&hw);
+	snd_pcm_hw_params_current(amx->io.pcm, hw);
+	ret = amux_hw_params_refine(amx, hw);
+	if(ret != 0) {
+		AMUX_ERR("%s: amux_hw_params_refine error\n", __func__);
+		goto out;
+	}
+
+	/* TODO check hw period size */
+#if 0
+	snd_pcm_uframes_t val;
+	int dir;
+	snd_pcm_hw_params_get_period_size(hw, &val, &dir);
+	if(amx->io.period_size != val) {
+		AMUX_ERR("%s: Period size\n", __func__);
+		*(uint32_t *)0x0 = 12;
+	}
+	amx->io.period_size = val;
+	snd_pcm_hw_params_get_buffer_size(hw, &val);
+	if(amx->io.buffer_size != val) {
+		AMUX_ERR("%s: Buffer size\n", __func__);
+		*(uint32_t *)0x0 = 12;
+	}
+	amx->io.buffer_size = val;
+#endif
+
+	snd_pcm_sw_params_alloca(&sw);
+	snd_pcm_sw_params_current(amx->io.pcm, sw);
+	ret = snd_pcm_sw_params(amx->slave, sw);
+	if(ret != 0) {
+		AMUX_ERR("%s: snd_pcm_sw_params error\n", __func__);
+		goto out;
+	}
+
+	/* TODO get/set chmaps */
+
+	ret = snd_pcm_prepare(amx->slave);
+	if(ret != 0) {
+		AMUX_ERR("%s: snd_pcm_prepare error\n", __func__);
+		goto out;
+	}
+
+	snr = snd_pcm_poll_descriptors_count(amx->slave);
+	if(snr > (int)ARRAY_SIZE(sfd)) {
+		AMUX_ERR("%s: Slave PCM has too many poll fd\n", __func__);
+		return -EINVAL;
+	}
+
+	if(snd_pcm_poll_descriptors(amx->slave, sfd, snr) < 0) {
+		AMUX_ERR("Can't get poll descriptor\n");
+		return -1;
+	}
+
+	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
+		ret = dup2(sfd[i % snr].fd, amx->pollfd[i]);
+		if(ret < 0) {
+			AMUX_ERR("%s: cannot dup2\n", __func__);
+			return ret;
+		}
+	}
+	ret = 0;
+out:
+	return ret;
+}
+
+/**
+ * Switch slave PCM
+ */
+static int amux_switch(struct snd_pcm_amux *amx)
+{
+	ssize_t n;
+	int ret = -1;
+	char card = '0' + amx->idx;
+
+	AMUX_DBG("%s: enter PCM(%p)\n", __func__, &amx->io);
+
+	lseek(amx->fd, SEEK_SET, 0);
+
+	n = read(amx->fd, &card, 1);
+	if(n < 0) {
+		perror("Cannot read");
+		goto out;
+	}
+
+	card -= '0';
+	if((size_t)card == amx->idx) {
+		ret = 0;
+		goto out;
+	}
+
+	ret = amux_cfg_slave(amx, card);
+out:
+	return ret;
+}
+
+/**
  * Set hw params PCM
  */
 static int amux_hw_params(struct snd_pcm_ioplug *io,
@@ -386,10 +511,13 @@ static snd_pcm_sframes_t amux_pointer(struct snd_pcm_ioplug *io)
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	avail = snd_pcm_avail_update(amx->slave);
+	if(amux_switch(amx) != 0)
+		return -EPIPE;
 
 	if(snd_pcm_state(amx->slave) != SND_PCM_STATE_RUNNING)
-		return io->appl_ptr;
+		snd_pcm_prepare(amx->slave);
+
+	avail = snd_pcm_avail_update(amx->slave);
 
 	ret = avail + io->appl_ptr - io->buffer_size;
 	if(ret < 0)
@@ -420,8 +548,10 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	if(amux_check_card(amx) != 0)
+	if(amux_switch(amx) != 0) {
+		AMUX_ERR("%s: PCM slave switching error\n", __func__);
 		return -EPIPE;
+	}
 
 	/* TODO check nr == AMUX_POLLFD_MAX */
 
@@ -477,8 +607,10 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	if(amux_check_card(amx) != 0)
+	if(amux_switch(amx) != 0) {
+		AMUX_ERR("%s: PCM slave switching error\n", __func__);
 		return -EPIPE;
+	}
 
 #ifdef AMUX_POLL
 	nfds = snd_pcm_poll_descriptors_count(amx->slave);
@@ -513,7 +645,7 @@ static snd_pcm_sframes_t amux_transfer(struct snd_pcm_ioplug *io,
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	if(amux_check_card(amx) != 0)
+	if(amux_switch(amx) != 0)
 		return -EPIPE;
 
 	/* Check buffers integrity */
@@ -670,6 +802,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	amx->io.version = SND_PCM_IOPLUG_VERSION;
 	amx->io.name = "Amux live PCM card multiplexer plugin";
 	amx->io.callback = &amux_ops;
+	amx->stream = stream;
+	amx->mode = mode;
 #ifndef AMUX_POLL
 	/* Open an always write ready fd */
 	int fd[2];

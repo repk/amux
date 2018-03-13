@@ -80,6 +80,6 @@ Then test that everything works with:
 Limitations
 -----------
 
- - Do not support live PCM switching yet.
+ - Live switch with different buffer_size/period_size PCM is unstable
  - Only support playback
  - There is no control plugin yet (to live switch default control card).
