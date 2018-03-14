@@ -28,6 +28,10 @@
 
 #define AMUX_ERR(...) fprintf(stderr, __VA_ARGS__)
 
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(s) (sizeof(s) / sizeof(*(s)))
+#endif
+
 #ifndef container_of
 /**
  * container_of - cast a member of a structure out to the containing structure
@@ -43,6 +47,7 @@
 
 #define CARD_STRSZ 32
 #define SLAVENR 32
+#define AMUX_POLLFD_MAX 8
 
 struct snd_pcm_amux {
 	struct snd_pcm_ioplug io;
@@ -54,18 +59,22 @@ struct snd_pcm_amux {
 	size_t idx; /* Selected slave idx */
 	int mode;
 	int fd;
+	int pollfd[AMUX_POLLFD_MAX];
 };
 #define to_pcm_amux(p) (container_of(p, struct snd_pcm_amux, io))
 
 static inline struct snd_pcm_amux *amux_create(void)
 {
 	struct snd_pcm_amux *amx;
+	size_t i;
 
 	amx = calloc(1, sizeof(*amx));
 	if(amx == NULL)
 		goto out;
 
 	amx->fd = -1;
+	for(i = 0; i < AMUX_POLLFD_MAX; ++i)
+		amx->pollfd[i] = -1;
 out:
 	return amx;
 }
@@ -79,6 +88,11 @@ static inline void amux_destroy(struct snd_pcm_amux *amx)
 
 	if(amx->slave)
 		snd_pcm_close(amx->slave);
+
+	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
+		if(amx->pollfd[i] != -1)
+			close(amx->pollfd[i]);
+	}
 
 	for(i = 0; i < amx->slavenr; ++i)
 		free(amx->sname[i]);
@@ -389,14 +403,10 @@ static snd_pcm_sframes_t amux_pointer(struct snd_pcm_ioplug *io)
 #ifdef AMUX_POLL
 static int amux_poll_descriptors_count(snd_pcm_ioplug_t *io)
 {
-	struct snd_pcm_amux *amx = to_pcm_amux(io);
-
+	(void)io;
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	if(amux_check_card(amx) != 0)
-		return -EPIPE;
-
-	return snd_pcm_poll_descriptors_count(amx->slave);
+	return AMUX_POLLFD_MAX;
 }
 
 static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
@@ -404,11 +414,16 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 {
 	struct snd_pcm_amux *amx = to_pcm_amux(io);
 	snd_pcm_state_t state;
+	struct pollfd sfd[AMUX_POLLFD_MAX];
+	size_t i;
+	int snr, ret;
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
 	if(amux_check_card(amx) != 0)
 		return -EPIPE;
+
+	/* TODO check nr == AMUX_POLLFD_MAX */
 
 	state = snd_pcm_state(amx->slave);
 	if(state == SND_PCM_STATE_XRUN ||
@@ -426,9 +441,29 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		return -EPIPE;
 	}
 
-	if(snd_pcm_poll_descriptors(amx->slave, pfds, nr) < 0) {
+	snr = snd_pcm_poll_descriptors_count(amx->slave);
+	if(snr > (int)ARRAY_SIZE(sfd)) {
+		AMUX_ERR("%s: Slave PCM has too many poll fd\n", __func__);
+		return -EINVAL;
+	}
+
+	if(snd_pcm_poll_descriptors(amx->slave, sfd, snr) < 0) {
 		AMUX_ERR("Can't get poll descriptor\n");
 		return -1;
+	}
+
+	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
+		if(amx->pollfd[i] < 0)
+			ret = dup(sfd[i % snr].fd);
+		else
+			ret = dup2(sfd[i % snr].fd, amx->pollfd[i]);
+
+		if(ret < 0)
+			return ret;
+
+		amx->pollfd[i] = ret;
+		pfds[i].fd = amx->pollfd[i];
+		pfds[i].events = POLLIN | POLLOUT;
 	}
 
 	return nr;
@@ -446,12 +481,11 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		return -EPIPE;
 
 #ifdef AMUX_POLL
+	nfds = snd_pcm_poll_descriptors_count(amx->slave);
 	snd_pcm_poll_descriptors_revents(amx->slave, pfds, nfds, revents);
 	if(snd_pcm_avail_update(amx->slave) <
-			(snd_pcm_sframes_t)io->period_size) {
+			(snd_pcm_sframes_t)io->period_size)
 		*revents &= ~POLLOUT;
-		*revents |= POLLERR;
-	}
 #else
 	while(snd_pcm_avail_update(amx->slave) <
 		(snd_pcm_sframes_t)io->period_size) {
