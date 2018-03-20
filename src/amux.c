@@ -621,6 +621,8 @@ static snd_pcm_sframes_t amux_pointer(struct snd_pcm_ioplug *io)
 		snd_pcm_prepare(amx->slave);
 
 	avail = snd_pcm_avail_update(amx->slave);
+	if((snd_pcm_uframes_t)avail > io->buffer_size)
+		avail = io->buffer_size;
 
 	ret = avail + io->appl_ptr - io->buffer_size;
 	if(ret < 0)
