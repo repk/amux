@@ -12,11 +12,7 @@
 #include <alsa/asoundlib.h>
 #include <alsa/pcm_external.h>
 
-#define AMUX_POLL
-
-#ifndef AMUX_POLL
-#include <unistd.h> /* TODO remove when usleep is no more needed */
-#endif
+#define AMUX_DUPFD
 
 //#define DEBUG
 
@@ -633,7 +629,6 @@ static snd_pcm_sframes_t amux_pointer(struct snd_pcm_ioplug *io)
 	return ret;
 }
 
-#ifdef AMUX_POLL
 /**
  * Callback to get the number of poll file descriptor of an IO plugin
  *
@@ -732,7 +727,6 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 
 	return nr;
 }
-#endif
 
 /**
  * Callback to handle IO plugin poll descriptors events.
@@ -756,20 +750,13 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		return -EPIPE;
 	}
 
-#ifdef AMUX_POLL
+#ifdef AMUX_DUPFD
 	nfds = snd_pcm_poll_descriptors_count(amx->slave);
 	snd_pcm_poll_descriptors_revents(amx->slave, pfds, nfds, revents);
 	/* We woke up to soon, playback is not ready */
 	if(snd_pcm_avail_update(amx->slave) <
 			(snd_pcm_sframes_t)io->period_size)
 		*revents &= ~POLLOUT;
-#else
-	while(snd_pcm_avail_update(amx->slave) <
-		(snd_pcm_sframes_t)io->period_size) {
-		usleep(10000);
-	}
-
-	*revents = POLLOUT;
 #endif
 	return 0;
 }
@@ -870,10 +857,8 @@ static struct snd_pcm_ioplug_callback amux_ops = {
 	.pointer = amux_pointer,
 	.transfer = amux_transfer,
 	.poll_revents = amux_poll_revents,
-#ifdef AMUX_POLL
 	.poll_descriptors_count = amux_poll_descriptors_count,
 	.poll_descriptors = amux_poll_descriptors,
-#endif
 	.dump = amux_dump,
 };
 
@@ -962,14 +947,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	amx->io.callback = &amux_ops;
 	amx->stream = stream;
 	amx->mode = mode;
-#ifndef AMUX_POLL
-	/* Open an always write ready fd */
-	int fd[2];
-	pipe(fd);
-	amx->io.poll_fd = fd[1];
-#else
 	amx->io.poll_fd = -1;
-#endif
 	amx->io.poll_events = POLLOUT;
 	ret = snd_pcm_ioplug_create(&amx->io, name, stream, mode);
 	if(ret != 0)
