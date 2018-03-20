@@ -50,20 +50,65 @@
 #define SLAVENR 32
 #define AMUX_POLLFD_MAX 8
 
+/**
+ * Amux master PCM structure
+ */
 struct snd_pcm_amux {
+	/**
+	 * IO plugin interface
+	 */
 	struct snd_pcm_ioplug io;
+	/**
+	 * Currently selected PCM slave
+	 */
 	snd_pcm_t *slave;
-	char *sname[SLAVENR]; /* Slave PCM names */
+	/**
+	 * List of multiplexed slaves
+	 */
+	char *sname[SLAVENR];
+	/**
+	 * Current open stream
+	 */
 	snd_pcm_stream_t stream;
+	/**
+	 * Configured ring buffer boundary
+	 */
 	snd_pcm_uframes_t boundary;
+	/**
+	 * Total number of selectable multiplexed slave
+	 */
 	size_t slavenr;
-	size_t idx; /* Selected slave idx */
+	/**
+	 * Currently used slave index in sname array
+	 */
+	size_t idx;
+	/**
+	 * Current open mode
+	 */
 	int mode;
+	/**
+	 * Slave configuration file descriptor
+	 */
 	int fd;
+	/**
+	 * Mock poll file descriptor array.
+	 * This array is used to present a constant poll * interface to user.
+	 * When slave changes, those file descriptors are set to point to the
+	 * new slave's fds, but their file descriptor numbers do not change.
+	 * Thus making the slave switch operation transparent for user.
+	 */
 	int pollfd[AMUX_POLLFD_MAX];
 };
+/**
+ * Convert an IO plugin interface pointer to Amux PCM structure.
+ */
 #define to_pcm_amux(p) (container_of(p, struct snd_pcm_amux, io))
 
+/**
+ * Allocate and init a new amux PCM structure.
+ *
+ * @return: New amux PCM on success, NULL pointer if allocation failed.
+ */
 static inline struct snd_pcm_amux *amux_create(void)
 {
 	struct snd_pcm_amux *amx;
@@ -80,6 +125,11 @@ out:
 	return amx;
 }
 
+/**
+ * Cleanup an Amux PCM
+ *
+ * @param amx: PCM to destroy
+ */
 static inline void amux_destroy(struct snd_pcm_amux *amx)
 {
 	size_t i;
@@ -104,7 +154,13 @@ static inline void amux_destroy(struct snd_pcm_amux *amx)
 	free(amx);
 }
 
-/* Check if current and configured PCM are still the same */
+/**
+ * Check if the configured slave matches the currently used one.
+ *
+ * @param amx: Amux master PCM
+ * @return: -1 if configured PCM is different from current one or an error
+ * occured, 0 otherwise.
+ */
 static inline int amux_check_card(struct snd_pcm_amux *amx)
 {
 	ssize_t n;
@@ -128,7 +184,10 @@ out:
 }
 
 /**
- * Close an IO plugin PCM device
+ * Close callback of an IO plugin PCM device.
+ *
+ * @param io: The IO plugin to close.
+ * @return: 0 on success, negative number otherwise.
  */
 static int amux_close(struct snd_pcm_ioplug *io)
 {
@@ -141,7 +200,10 @@ static int amux_close(struct snd_pcm_ioplug *io)
 }
 
 /**
- * Start PCM playback
+ * Callback for starting IO plugin PCM playback.
+ *
+ * @param io: The IO plugin interface to start.
+ * @return: 0 on success, negative number otherwise.
  */
 static int amux_start(struct snd_pcm_ioplug *io)
 {
@@ -158,7 +220,10 @@ static int amux_start(struct snd_pcm_ioplug *io)
 }
 
 /**
- * Stop PCM playback
+ * Stop callback of an IO plugin PCM. This drops current playback buffers.
+ *
+ * @param io: The IO plugin interface to stop.
+ * @return: 0 on success, negative number otherwise.
  */
 static int amux_stop(struct snd_pcm_ioplug *io)
 {
@@ -175,7 +240,10 @@ static int amux_stop(struct snd_pcm_ioplug *io)
 }
 
 /**
- * Prepare PCM playback
+ * Prepare callback of IO plugin PCM.
+ *
+ * @param io: The IO plugin interface to prepare.
+ * @return: 0 on success, negative number otherwise.
  */
 static int amux_prepare(struct snd_pcm_ioplug *io)
 {
@@ -199,7 +267,10 @@ static int amux_prepare(struct snd_pcm_ioplug *io)
 }
 
 /*
- * Get slave's PCM sw params
+ * Callback to query IO plugin PCM's channel mapping.
+ *
+ * @param io: IO plugin interface to query channel mapping from.
+ * @return: The channel mapping
  */
 static snd_pcm_chmap_query_t **amux_query_chmaps(snd_pcm_ioplug_t *io)
 {
@@ -211,7 +282,10 @@ static snd_pcm_chmap_query_t **amux_query_chmaps(snd_pcm_ioplug_t *io)
 }
 
 /*
- * Configure slave's PCM channel map
+ * Callback to configure IO plugin PCM's channel mapping.
+ *
+ * @param io: IO plugin interface to configure channel mapping.
+ * @param map: The channel mapping
  */
 static int amux_set_chmap(snd_pcm_ioplug_t *io, snd_pcm_chmap_t const *map)
 {
@@ -223,7 +297,10 @@ static int amux_set_chmap(snd_pcm_ioplug_t *io, snd_pcm_chmap_t const *map)
 }
 
 /*
- * Configure slave's PCM sw params
+ * Callback to configure IO plugin PCM's software params.
+ *
+ * @param io: IO plugin interface to configure.
+ * @param parm: Software params to configure with.
  */
 static int amux_sw_params(snd_pcm_ioplug_t *io, snd_pcm_sw_params_t *parm)
 {
@@ -233,12 +310,22 @@ static int amux_sw_params(snd_pcm_ioplug_t *io, snd_pcm_sw_params_t *parm)
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
 	ret = snd_pcm_sw_params(amx->slave, parm);
-	snd_pcm_sw_params_get_boundary(parm, &amx->boundary);
+	if(ret < 0) {
+		AMUX_ERR("%s: Cannot configure slave sw params\n", __func__);
+		goto out;
+	}
+
+	ret = snd_pcm_sw_params_get_boundary(parm, &amx->boundary);
+out:
 	return ret;
 }
 
 /*
- * Configure PCM slave and refine master hwparams
+ * Configure PCM slave and refine amux master hardware params
+ *
+ * @param amx: Amux master.
+ * @param hw: Hardware params to configure with.
+ * @return: 0 on success, negative number otherwise.
  */
 static int amux_hw_params_refine(struct snd_pcm_amux *amx,
 		snd_pcm_hw_params_t *hw)
@@ -362,7 +449,11 @@ out:
 }
 
 /**
- * Configure new slave PCM
+ * Configure new slave PCM.
+ *
+ * @param amx: Amux master.
+ * @param idx: New slave index.
+ * @return: 0 on success, negative number otherwise.
  */
 static int amux_cfg_slave(struct snd_pcm_amux *amx, size_t idx)
 {
@@ -456,7 +547,11 @@ out:
 }
 
 /**
- * Switch slave PCM
+ * Switch slave PCM if configuration changed
+ *
+ * @param amx: Amux master
+ * @return: 0 if slave hasn't changed or switch succeed, negative number
+ * otherwise.
  */
 static int amux_switch(struct snd_pcm_amux *amx)
 {
@@ -486,7 +581,11 @@ out:
 }
 
 /**
- * Set hw params PCM
+ * Callback to configure IO plugin PCM hardware params.
+ *
+ * @param io: IO plugin interface.
+ * @param params: Hardware param to configure plugin with.
+ * @return: 0 on success, negative number otherwise.
  */
 static int amux_hw_params(struct snd_pcm_ioplug *io,
 		snd_pcm_hw_params_t *params)
@@ -502,7 +601,11 @@ static int amux_hw_params(struct snd_pcm_ioplug *io,
 }
 
 /**
- * Get current DMA position
+ * Callback to get IO plugin's current playback/capture buffer hardware
+ * position.
+ *
+ * @param io: IO plugin interface.
+ * @return: The hardware buffer positiion in frame, can be negative on error.
  */
 static snd_pcm_sframes_t amux_pointer(struct snd_pcm_ioplug *io)
 {
@@ -529,14 +632,32 @@ static snd_pcm_sframes_t amux_pointer(struct snd_pcm_ioplug *io)
 }
 
 #ifdef AMUX_POLL
+/**
+ * Callback to get the number of poll file descriptor of an IO plugin
+ *
+ * @param io: The IO plugin interface
+ * @return: Always AMUX_POLLFD_MAX
+ */
 static int amux_poll_descriptors_count(snd_pcm_ioplug_t *io)
 {
 	(void)io;
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
+	/*
+	 * Amux always exhibit the same number of polling descriptor. So that
+	 * PCM slave switch is tranparent for the user
+	 */
 	return AMUX_POLLFD_MAX;
 }
 
+/**
+ * Callback to get the actual IO plugin poll descriptors.
+ *
+ * @param io: The IO plugin interface.
+ * @param pfds: Filled Poll descriptor array.
+ * @param nr: Poll descriptor array size.
+ * @return: 0 on success, negative number otherwise.
+ */
 static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		unsigned int nr)
 {
@@ -571,18 +692,29 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		return -EPIPE;
 	}
 
+	/* Fetch slave poll descriptors (in case of slave switch) */
 	snr = snd_pcm_poll_descriptors_count(amx->slave);
 	if(snr > (int)ARRAY_SIZE(sfd)) {
 		AMUX_ERR("%s: Slave PCM has too many poll fd\n", __func__);
 		return -EINVAL;
 	}
-
 	if(snd_pcm_poll_descriptors(amx->slave, sfd, snr) < 0) {
 		AMUX_ERR("Can't get poll descriptor\n");
 		return -1;
 	}
 
+	/*
+	 * Fill the poll descriptor array, first with mock poll descriptors
+	 * pointing to the slave ones. If slave PCM has less descriptor than
+	 * the pfds array, the remaining spaces are still fill with another
+	 * mock poll descriptors pointing to slave ones.
+	 */
 	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
+		/*
+		 * On first time create the mock poll descriptors with dup(),
+		 * then on next calls reuse the mock poll descriptors numbers
+		 * with dup2().
+		 */
 		if(amx->pollfd[i] < 0)
 			ret = dup(sfd[i % snr].fd);
 		else
@@ -600,6 +732,16 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 }
 #endif
 
+/**
+ * Callback to handle IO plugin poll descriptors events.
+ *
+ * @param io: IO plugin interface.
+ * @param pfds: Poll descriptor array.
+ * @param nfds: Poll descriptor array size.
+ * @param revents: Resulting poll events
+ * @return: 0 on success with revents filled up with appropriate events,
+ * negative number otherwise.
+ */
 static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		unsigned int nfds, unsigned short *revents)
 {
@@ -615,6 +757,7 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 #ifdef AMUX_POLL
 	nfds = snd_pcm_poll_descriptors_count(amx->slave);
 	snd_pcm_poll_descriptors_revents(amx->slave, pfds, nfds, revents);
+	/* We woke up to soon, playback is not ready */
 	if(snd_pcm_avail_update(amx->slave) <
 			(snd_pcm_sframes_t)io->period_size)
 		*revents &= ~POLLOUT;
@@ -630,7 +773,13 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 }
 
 /**
- * Transfer data to selected soundcard
+ * Callback for IO plugin transfer data.
+ *
+ * @param io: IO plugin interface.
+ * @param areas: Channel frames
+ * @param offset: offset of data in channel frames
+ * @param size: size of data to transfer
+ * @return: the number of transferred frames, can be negative on error.
  */
 static snd_pcm_sframes_t amux_transfer(struct snd_pcm_ioplug *io,
 		snd_pcm_channel_area_t const *areas,
@@ -675,6 +824,7 @@ static snd_pcm_sframes_t amux_transfer(struct snd_pcm_ioplug *io,
 	}
 
 	state = snd_pcm_state(amx->slave);
+	/* Start slave if not started */
 	if(state == SND_PCM_STATE_PREPARED)
 		snd_pcm_start(amx->slave);
 	else if(state != SND_PCM_STATE_RUNNING)
@@ -687,7 +837,10 @@ static snd_pcm_sframes_t amux_transfer(struct snd_pcm_ioplug *io,
 }
 
 /**
- * Dump PCM params
+ * Callback to dump IO plugin PCM param informations.
+ *
+ * @param io: IO plugin interface
+ * @param out: Output interface to write into.
  */
 static void amux_dump(snd_pcm_ioplug_t *io, snd_output_t *out)
 {
@@ -722,6 +875,9 @@ static struct snd_pcm_ioplug_callback amux_ops = {
 	.dump = amux_dump,
 };
 
+/**
+ * AMUX plugin's open function
+ */
 SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	struct snd_pcm_amux *amx;
 	char const *pname = NULL, *fpath = NULL;
