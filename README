@@ -82,4 +82,7 @@ Limitations
 
  - Live switch with different buffer_size/period_size PCM is unstable
  - Only support playback
- - There is no control plugin yet (to live switch default control card).
+ - There is no control plugin yet (to live switch default control card)
+ - There is no mmap support yet
+ - It cannot live switch PCM with different rate (it's important to use a
+   softrate plugin).
