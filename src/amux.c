@@ -12,7 +12,7 @@
 #include <alsa/asoundlib.h>
 #include <alsa/pcm_external.h>
 
-//#define AMUX_DUPFD
+#define AMUX_DUPFD
 
 #ifndef AMUX_DUPFD
 #include <pthread.h>
@@ -49,7 +49,7 @@
 
 #define CARD_STRSZ 32
 #define SLAVENR 32
-#define AMUX_POLLFD_MAX 8
+#define AMUX_POLLFD_MAX 4
 
 /**
  * Amux master PCM structure
@@ -107,13 +107,24 @@ struct snd_pcm_amux {
 	uint8_t stop;
 #else
 	/**
-	 * Mock poll file descriptor array.
-	 * This array is used to present a constant poll * interface to user.
+	 * Mock poll file descriptor arrays.
+	 * These arrays are used to present a constant poll interface to user.
 	 * When slave changes, those file descriptors are set to point to the
 	 * new slave's fds, but their file descriptor numbers do not change.
 	 * Thus making the slave switch operation transparent for user.
+	 *
+	 * infd is for descriptors to poll for POLLIN events.
 	 */
-	int pollfd[AMUX_POLLFD_MAX];
+	int infd[AMUX_POLLFD_MAX];
+	/**
+	 * outfd is for descriptors to poll for POLLOUT events.
+	 */
+	int outfd[AMUX_POLLFD_MAX];
+	/**
+	 * efd is used to have always blocking fd. Use efd[1] as a fd
+	 * placeholder in infd and efd[0] as a placeholder for outfd.
+	 */
+	int efd[2];
 #endif
 	/**
 	 * Total number of selectable multiplexed slave
@@ -183,6 +194,80 @@ static inline void amux_user_block(struct snd_pcm_amux *amx)
 	read(amx->eventfd, &discard, sizeof(discard));
 	(void)discard;
 }
+#else
+/**
+ * Update the poll arrays with new fds
+ *
+ * @params amx: Amux master PCM
+ * @params pfd: pollfd array to update infd[]/outfd[] with
+ * @params nr: Number of pollfd element in pfd
+ * @return: 0 on success, negative number otherwise
+ */
+static inline int amux_update_fd(struct snd_pcm_amux *amx,
+		struct pollfd const *pfd, size_t nr)
+{
+	size_t i;
+	int ret;
+
+	/*
+	 * Fill the poll descriptor array, first with mock poll descriptors
+	 * pointing to the slave ones. If slave PCM has less descriptor than
+	 * the pfds array, the remaining spaces are fill with mock pipe
+	 * descriptors.
+	 */
+	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
+		/* Read fd */
+		if(pfd[i % nr].events & POLLIN)
+			ret = dup2(pfd[i % nr].fd, amx->infd[i]);
+		else
+			ret = dup2(amx->efd[1], amx->infd[i]);
+		if(ret < 0) {
+			AMUX_ERR("%s: cannot dup2\n", __func__);
+			goto out;
+		}
+
+		/* Write fd */
+		if(pfd[i % nr].events & POLLOUT)
+			ret = dup2(pfd[i % nr].fd, amx->outfd[i]);
+		else
+			ret = dup2(amx->efd[0], amx->outfd[i]);
+		if(ret < 0) {
+			AMUX_ERR("%s: cannot dup2\n", __func__);
+			goto out;
+		}
+	}
+
+	ret = 0;
+
+out:
+	return ret;
+}
+
+/**
+ * Fill a poll descriptor array to be used by the user
+ *
+ * @params amx: Amux master PCM
+ * @params pfd: pollfd array to fill
+ * @params nr: Size of pollfd
+ * @return: 0 on success, negative number otherwise
+ */
+static inline int amux_fill_descriptors(struct snd_pcm_amux *amx,
+		struct pollfd *pfd, size_t nr)
+{
+	size_t i;
+
+	if(nr != (AMUX_POLLFD_MAX << 1))
+		return -EINVAL;
+
+	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
+		pfd[(i << 1)].fd = amx->infd[i];
+		pfd[(i << 1)].events = POLLIN;
+		pfd[(i << 1) + 1].fd = amx->outfd[i];
+		pfd[(i << 1) + 1].events = POLLOUT;
+	}
+
+	return 0;
+}
 #endif
 
 /**
@@ -202,8 +287,16 @@ static inline struct snd_pcm_amux *amux_create(void)
 #ifdef AMUX_DUPFD
 	do {
 		size_t i;
-		for(i = 0; i < AMUX_POLLFD_MAX; ++i)
-			amx->pollfd[i] = -1;
+		if(pipe(amx->efd) < 0) {
+			AMUX_ERR("%s: Pipe creation error\n", __func__);
+			free(amx);
+			amx = NULL;
+			goto out;
+		}
+		for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
+			amx->infd[i] = dup(amx->efd[1]);
+			amx->outfd[i] = dup(amx->efd[0]);
+		}
 	} while(0);
 #else
 	amx->eventfd = eventfd(1, EFD_CLOEXEC);
@@ -245,9 +338,13 @@ static inline void amux_destroy(struct snd_pcm_amux *amx)
 		snd_pcm_close(amx->slave);
 
 #ifdef AMUX_DUPFD
+	close(amx->efd[0]);
+	close(amx->efd[1]);
 	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
-		if(amx->pollfd[i] != -1)
-			close(amx->pollfd[i]);
+		if(amx->infd[i] != -1)
+			close(amx->infd[i]);
+		if(amx->outfd[i] != -1)
+			close(amx->outfd[i]);
 	}
 #else
 	close(amx->eventfd);
@@ -649,16 +746,10 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, size_t idx)
 	}
 
 #ifdef AMUX_DUPFD
-	do {
-		size_t i;
-		for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
-			ret = dup2(sfd[i % snr].fd, amx->pollfd[i]);
-			if(ret < 0) {
-				AMUX_ERR("%s: cannot dup2\n", __func__);
-				return ret;
-			}
-		}
-	} while(0);
+	if(amux_update_fd(amx, sfd, snr) != 0) {
+		AMUX_ERR("Can't get poll descriptor\n");
+		return -1;
+	}
 #else
 	poll(sfd, snr, 0);
 	pthread_mutex_lock(&amx->lock);
@@ -782,7 +873,7 @@ static int amux_poll_descriptors_count(snd_pcm_ioplug_t *io)
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
 #ifdef AMUX_DUPFD
-	ret = AMUX_POLLFD_MAX;
+	ret = AMUX_POLLFD_MAX << 1;
 #else
 	ret = 1;
 #endif
@@ -845,35 +936,14 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 	}
 
 #ifdef AMUX_DUPFD
-	do {
-		size_t i;
-		int ret;
-		/*
-		 * Fill the poll descriptor array, first with mock poll
-		 * descriptors pointing to the slave ones. If slave PCM has
-		 * less descriptor than the pfds array, the remaining spaces
-		 * are still fill with another mock poll descriptors pointing
-		 * to slave ones.
-		 */
-		for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
-			/*
-			 * On first time create the mock poll descriptors with
-			 * dup(), then on next calls reuse the mock poll
-			 * descriptors numbers with dup2().
-			 */
-			if(amx->pollfd[i] < 0)
-				ret = dup(sfd[i % snr].fd);
-			else
-				ret = dup2(sfd[i % snr].fd, amx->pollfd[i]);
-
-			if(ret < 0)
-				return ret;
-
-			amx->pollfd[i] = ret;
-			pfds[i].fd = amx->pollfd[i];
-			pfds[i].events = POLLIN | POLLOUT;
-		}
-	} while(0);
+	if(amux_update_fd(amx, sfd, snr) != 0) {
+		AMUX_ERR("Can't update poll descriptor list\n");
+		return -1;
+	}
+	if(amux_fill_descriptors(amx, pfds, nr) != 0) {
+		AMUX_ERR("Can't build user poll descriptor\n");
+		return -1;
+	}
 #else
 	poll(sfd, snr, 0);
 	pthread_mutex_lock(&amx->lock);
@@ -923,12 +993,19 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 	}
 
 #ifdef AMUX_DUPFD
-	nfds = snd_pcm_poll_descriptors_count(amx->slave);
-	snd_pcm_poll_descriptors_revents(amx->slave, pfds, nfds, revents);
-	/* We woke up to soon, playback is not ready */
-	if(snd_pcm_avail_update(amx->slave) <
-			(snd_pcm_sframes_t)io->period_size)
-		*revents &= ~POLLOUT;
+	do {
+		struct pollfd sfd[AMUX_POLLFD_MAX];
+		(void)pfds;
+		nfds = snd_pcm_poll_descriptors_count(amx->slave);
+		snd_pcm_poll_descriptors(amx->slave, sfd, nfds);
+		poll(sfd, nfds, 0);
+		snd_pcm_poll_descriptors_revents(amx->slave, sfd, nfds,
+				revents);
+		/* We woke up to soon, playback is not ready */
+		if(snd_pcm_avail_update(amx->slave) <
+				(snd_pcm_sframes_t)io->period_size)
+			*revents &= ~POLLOUT;
+	} while(0);
 #else
 	*revents = 0;
 	if((nfds != 1) || (pfds[0].fd != amx->eventfd))
