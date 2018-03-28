@@ -827,10 +827,9 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		 */
 		snd_pcm_prepare(amx->slave);
 		snd_pcm_start(amx->slave);
-	} else if (snd_pcm_state(amx->slave) != SND_PCM_STATE_RUNNING) {
+	} else if (state != SND_PCM_STATE_RUNNING) {
 		/* XXX This should not happen */
-		AMUX_ERR("%s: Invalid PCM state %d\n", __func__,
-				snd_pcm_state(amx->slave));
+		AMUX_ERR("%s: Invalid PCM state %d\n", __func__, state);
 		return -EPIPE;
 	}
 
