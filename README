@@ -77,6 +77,16 @@ Then test that everything works with:
  $ export AMUX_LIBRARY=<path-to-libasound_pcm_amux.so>
  $ aplay -f cd <file.wav>
 
+Polling mode
+------------
+
+There is two different ways to poll. The dup-poll-mode creates some mock file
+descriptors using dup2 and the thread-mode uses a thread to poll for slave and
+notifies the user through an eventfd.
+
+The default mode is the dup-poll-mode. To switch to thread-mode, one should
+comment the line "#define AMUX_DUPFD" in src/amux.c.
+
 Limitations
 -----------
 
@@ -86,5 +96,16 @@ Limitations
  - There is no mmap support yet
  - It cannot live switch PCM with different rate (it's important to use a
    softrate plugin).
- - It creates a thread for polling at each snd_pcm_open(). I may create a
-   polling char device driver to workaround that.
+ - It creates a dozen of fake fd and is limited in the number of pollfd a slave
+   can have (4 by default) when compiled in default mode (dup-poll-mode).
+ - It creates a thread for polling (in thread-mode) at each snd_pcm_open(). I
+   may create a polling char device driver to workaround the two previous
+   limitations.
+
+Firefox
+-------
+
+Firefox uses a sandbox for security reasons. If you want to use this plugin in
+dup-poll-mode (the default mode) with firefox, the dup2() syscall has to be
+added in the whitelist. For example on x86_64 one should go to about:config and
+add 33 (dup2 syscall nb) in the "security.sandbox.content.syscall_whitelist".
