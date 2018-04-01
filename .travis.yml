@@ -1,0 +1,25 @@
+language: c
+
+env:
+  global:
+   # The next declaration is the encrypted COVERITY_SCAN_TOKEN, created
+   #   via the "travis encrypt" command using the project repo's public key
+   - secure: "qb/ph7E/a7oR874ut4hF8VgH50pIa7PL/Px2E+imMtD/uRF6LfZPo9qlxO+NXhwWN7soUcdBIhNfm7kvjZLml6laWq/rmfZ12SNQWrgUVyg2tZmL7T4p3p7ydIcAXOB3Mkac0sWb9GtWB53gn8q3RQAzteg8ZZiI03VmCj3NjgEthQwk+nW5YfyBGstHxoYh7wSfuWteFPgnBcVhsyjnH+4cqvmagvmEZMvkU8sXsQkMwFK+C52EQkJMTzYH2iUnsNetn3GwLD2KkTCOP0lowEVhfnCP3J9oAoQnQ5f/5i8ZeBuLifw04croYyMyOkmwDvbSs5MzL840Nv8UekGAM/wZ2KGLivQU0yBH4LHG5C3PjoDrY+jOYLg6+XCVPX6DCNcrfEuPTKwgekfocgvjouC0l3ljCk3vsAd76ihRxNc6CIVYV8SZ91SfWm6NZpsH70dhgMS+XtljFYFW+msjYoYhb/s9fxaEFtzz/qs42cbzuC7FAt0S7KDgzmzkGCYEYdpPvLm7qcMSbju23M6IDYEViOcXlYhogWWsmq9w1vNUtw9bS4ufO8W5rJ1FtyHvJktnoUh6mpgOCd18XWpq+QiyOyKoYYnRcEIta49Hpz3tQ3FiNzBcOJqMdHonf52GDxyKLvsj5S6IABxvD2w1Sj8mOYEABrGNwVe3CZvU7HU="
+
+before_install:
+  - sudo apt-get install libasound2-dev
+  - echo -n | openssl s_client -connect scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
+
+addons:
+  coverity_scan:
+    project:
+      name: "repk/amux"
+      description: "Build submitted via Travis CI"
+    notification_email: repk@triplefau.lt
+    build_command_prepend: "make clean"
+    build_command: "make -j4"
+    branch_pattern: master
+
+script:
+  - make clean
+  - make -j4
