@@ -4,271 +4,14 @@
 #include <stddef.h>
 #include <errno.h>
 
-#include <sys/types.h>
-#include <sys/socket.h>
-
-#include <alsa/asoundlib.h>
-
 #include <alsa/asoundlib.h>
 #include <alsa/pcm_external.h>
 
-#define AMUX_DUPFD
-
-#ifndef AMUX_DUPFD
-#include <pthread.h>
-#include <sys/eventfd.h>
-#endif
-
-//#define DEBUG
-
-#ifdef DEBUG
-#define AMUX_DBG(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define AMUX_DBG(...)
-#endif
-
-#define AMUX_ERR(...) fprintf(stderr, __VA_ARGS__)
-#define AMUX_WARN(...) fprintf(stdout, __VA_ARGS__)
-
-#ifndef ARRAY_SIZE
-#define ARRAY_SIZE(s) (sizeof(s) / sizeof(*(s)))
-#endif
-
-#ifndef container_of
-/**
- * container_of - cast a member of a structure out to the containing structure
- * @ptr:        the pointer to the member.
- * @type:       the type of the container struct this is embedded in.
- * @member:     the name of the member within the struct.
- *
- */
-#define container_of(ptr, type, member) ({				\
-	void *__mptr = (void *)(ptr);					\
-	((type *)(__mptr - offsetof(type, member))); })
-#endif
+#include "amux.h"
+#include "poller/poller.h"
 
 #define CARD_STRSZ 32
-#define SLAVENR 32
 #define AMUX_POLLFD_MAX 4
-
-/**
- * Amux master PCM structure
- */
-struct snd_pcm_amux {
-	/**
-	 * IO plugin interface
-	 */
-	struct snd_pcm_ioplug io;
-	/**
-	 * Currently selected PCM slave
-	 */
-	snd_pcm_t *slave;
-	/**
-	 * List of multiplexed slaves
-	 */
-	char *sname[SLAVENR];
-	/**
-	 * Current open stream
-	 */
-	snd_pcm_stream_t stream;
-	/**
-	 * Configured ring buffer boundary
-	 */
-	snd_pcm_uframes_t boundary;
-#ifndef AMUX_DUPFD
-	/**
-	 * File descriptor array to poll (one fd is reserved for thread
-	 * communication).
-	 */
-	struct pollfd pfd[AMUX_POLLFD_MAX + 1];
-	/**
-	 * Number of file descritor in pfd array
-	 */
-	size_t pfdnr;
-	/**
-	 * Index of slave associated with the current poll array
-	 */
-	size_t pfdidx;
-	/**
-	 * Lock for poll fd array
-	 */
-	pthread_mutex_t lock;
-	/**
-	 * Polling thread handle
-	 */
-	pthread_t pollth;
-	/**
-	 * Event file used for alsa lib user polling
-	 */
-	int eventfd;
-	/**
-	 * Stop the polling thread
-	 */
-	uint8_t stop;
-#else
-	/**
-	 * Mock poll file descriptor arrays.
-	 * These arrays are used to present a constant poll interface to user.
-	 * When slave changes, those file descriptors are set to point to the
-	 * new slave's fds, but their file descriptor numbers do not change.
-	 * Thus making the slave switch operation transparent for user.
-	 *
-	 * infd is for descriptors to poll for POLLIN events.
-	 */
-	int infd[AMUX_POLLFD_MAX];
-	/**
-	 * outfd is for descriptors to poll for POLLOUT events.
-	 */
-	int outfd[AMUX_POLLFD_MAX];
-	/**
-	 * efd is used to have always blocking fd. Use efd[1] as a fd
-	 * placeholder in infd and efd[0] as a placeholder for outfd.
-	 */
-	int efd[2];
-#endif
-	/**
-	 * Total number of selectable multiplexed slave
-	 */
-	size_t slavenr;
-	/**
-	 * Currently used slave index in sname array
-	 */
-	size_t idx;
-	/**
-	 * Current open mode
-	 */
-	int mode;
-	/**
-	 * Slave configuration file descriptor
-	 */
-	int fd;
-};
-/**
- * Convert an IO plugin interface pointer to Amux PCM structure.
- */
-#define to_pcm_amux(p) (container_of(p, struct snd_pcm_amux, io))
-
-#ifndef AMUX_DUPFD
-/**
- * Wake up the polling thread.
- *
- * @params amx: Amux master PCM
- */
-static inline void amux_poll_wake(struct snd_pcm_amux *amx)
-{
-	uint64_t discard = 1;
-	write(amx->pfd[0].fd, &discard, sizeof(discard));
-}
-
-/**
- * Ack the wake up signal
- *
- * @params amx: Amux master PCM
- */
-static inline void amux_poll_ack(struct snd_pcm_amux *amx)
-{
-	uint64_t discard;
-	read(amx->pfd[0].fd, &discard, sizeof(discard));
-	(void)discard;
-}
-
-/**
- * Unblock user if it tries to poll
- *
- * @params amx: Amux master PCM
- */
-static inline void amux_user_unblock(struct snd_pcm_amux *amx)
-{
-	uint64_t discard = 1;
-	write(amx->eventfd, &discard, sizeof(discard));
-}
-
-/**
- * Block user if it tries to poll
- *
- * @params amx: Amux master PCM
- */
-static inline void amux_user_block(struct snd_pcm_amux *amx)
-{
-	uint64_t discard;
-	read(amx->eventfd, &discard, sizeof(discard));
-	(void)discard;
-}
-#else
-/**
- * Update the poll arrays with new fds
- *
- * @params amx: Amux master PCM
- * @params pfd: pollfd array to update infd[]/outfd[] with
- * @params nr: Number of pollfd element in pfd
- * @return: 0 on success, negative number otherwise
- */
-static inline int amux_update_fd(struct snd_pcm_amux *amx,
-		struct pollfd const *pfd, size_t nr)
-{
-	size_t i;
-	int ret;
-
-	/*
-	 * Fill the poll descriptor array, first with mock poll descriptors
-	 * pointing to the slave ones. If slave PCM has less descriptor than
-	 * the pfds array, the remaining spaces are fill with mock pipe
-	 * descriptors.
-	 */
-	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
-		/* Read fd */
-		if(pfd[i % nr].events & POLLIN)
-			ret = dup2(pfd[i % nr].fd, amx->infd[i]);
-		else
-			ret = dup2(amx->efd[1], amx->infd[i]);
-		if(ret < 0) {
-			AMUX_ERR("%s: cannot dup2\n", __func__);
-			goto out;
-		}
-
-		/* Write fd */
-		if(pfd[i % nr].events & POLLOUT)
-			ret = dup2(pfd[i % nr].fd, amx->outfd[i]);
-		else
-			ret = dup2(amx->efd[0], amx->outfd[i]);
-		if(ret < 0) {
-			AMUX_ERR("%s: cannot dup2\n", __func__);
-			goto out;
-		}
-	}
-
-	ret = 0;
-
-out:
-	return ret;
-}
-
-/**
- * Fill a poll descriptor array to be used by the user
- *
- * @params amx: Amux master PCM
- * @params pfd: pollfd array to fill
- * @params nr: Size of pollfd
- * @return: 0 on success, negative number otherwise
- */
-static inline int amux_fill_descriptors(struct snd_pcm_amux *amx,
-		struct pollfd *pfd, size_t nr)
-{
-	size_t i;
-
-	if(nr != (AMUX_POLLFD_MAX << 1))
-		return -EINVAL;
-
-	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
-		pfd[(i << 1)].fd = amx->infd[i];
-		pfd[(i << 1)].events = POLLIN;
-		pfd[(i << 1) + 1].fd = amx->outfd[i];
-		pfd[(i << 1) + 1].events = POLLOUT;
-	}
-
-	return 0;
-}
-#endif
 
 /**
  * Allocate and init a new amux PCM structure.
@@ -284,40 +27,12 @@ static inline struct snd_pcm_amux *amux_create(void)
 		goto out;
 
 	amx->fd = -1;
-#ifdef AMUX_DUPFD
-	do {
-		size_t i;
-		if(pipe(amx->efd) < 0) {
-			AMUX_ERR("%s: Pipe creation error\n", __func__);
-			free(amx);
-			amx = NULL;
-			goto out;
-		}
-		for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
-			amx->infd[i] = dup(amx->efd[1]);
-			amx->outfd[i] = dup(amx->efd[0]);
-		}
-	} while(0);
-#else
-	amx->eventfd = eventfd(1, EFD_CLOEXEC);
-	if(amx->eventfd < 0) {
-		AMUX_ERR("Cannot create eventfd\n");
+	amx->poller = poller_create(amx, "dupfd", NULL);
+	if(amx->poller == NULL) {
 		free(amx);
 		amx = NULL;
 		goto out;
 	}
-	amx->pfd[0].fd = eventfd(0, EFD_CLOEXEC);
-	if(amx->pfd[0].fd < 0) {
-		AMUX_ERR("Cannot create eventfd\n");
-		free(amx);
-		amx = NULL;
-		goto out;
-	}
-	amx->pfd[0].events = POLLIN;
-	amx->pfdnr = 1;
-	amx->pfdidx = -1;
-	pthread_mutex_init(&amx->lock, NULL);
-#endif
 out:
 	return amx;
 }
@@ -334,23 +49,10 @@ static inline void amux_destroy(struct snd_pcm_amux *amx)
 	if(amx == NULL)
 		return;
 
+	poller_destroy(amx->poller);
+
 	if(amx->slave)
 		snd_pcm_close(amx->slave);
-
-#ifdef AMUX_DUPFD
-	close(amx->efd[0]);
-	close(amx->efd[1]);
-	for(i = 0; i < AMUX_POLLFD_MAX; ++i) {
-		if(amx->infd[i] != -1)
-			close(amx->infd[i]);
-		if(amx->outfd[i] != -1)
-			close(amx->outfd[i]);
-	}
-#else
-	close(amx->eventfd);
-	close(amx->pfd[0].fd);
-	pthread_mutex_destroy(&amx->lock);
-#endif
 
 	for(i = 0; i < amx->slavenr; ++i)
 		free(amx->sname[i]);
@@ -401,11 +103,6 @@ static int amux_close(struct snd_pcm_ioplug *io)
 	struct snd_pcm_amux *amx = to_pcm_amux(io);
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
-#ifndef AMUX_DUPFD
-	amx->stop = 1;
-	amux_poll_wake(amx);
-	pthread_join(amx->pollth, NULL);
-#endif
 	amux_destroy(amx);
 
 	return 0;
@@ -460,11 +157,23 @@ static int amux_stop(struct snd_pcm_ioplug *io)
 static int amux_prepare(struct snd_pcm_ioplug *io)
 {
 	struct snd_pcm_amux *amx = to_pcm_amux(io);
+	int ret;
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
 	if(amux_check_card(amx) != 0)
 		return 0;
+
+	ret = snd_pcm_prepare(amx->slave);
+	if(ret != 0) {
+		AMUX_ERR("Can't prepare slave\n");
+		return ret;
+	}
+
+	if(poller_set_slave(amx->poller) < 0) {
+		AMUX_ERR("Can't set new slave\n");
+		return -EPIPE;
+	}
 
 #ifdef DEBUG
 	do {
@@ -474,8 +183,7 @@ static int amux_prepare(struct snd_pcm_ioplug *io)
 		snd_output_close(out);
 	} while(0);
 #endif
-
-	return snd_pcm_prepare(amx->slave);
+	return 0;
 }
 
 /*
@@ -671,8 +379,7 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, size_t idx)
 {
 	snd_pcm_hw_params_t *hw;
 	snd_pcm_sw_params_t *sw;
-	struct pollfd sfd[AMUX_POLLFD_MAX];
-	int snr, ret;
+	int ret;
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, &amx->io);
 
@@ -734,40 +441,11 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, size_t idx)
 		goto out;
 	}
 
-	snr = snd_pcm_poll_descriptors_count(amx->slave);
-	if(snr > (int)ARRAY_SIZE(sfd)) {
-		AMUX_ERR("%s: Slave PCM has too many poll fd\n", __func__);
-		return -EINVAL;
-	}
-
-	if(snd_pcm_poll_descriptors(amx->slave, sfd, snr) < 0) {
-		AMUX_ERR("Can't get poll descriptor\n");
+	if(poller_set_slave(amx->poller) != 0) {
+		AMUX_ERR("Can't set poller's new slave\n");
 		return -1;
 	}
 
-#ifdef AMUX_DUPFD
-	if(amux_update_fd(amx, sfd, snr) != 0) {
-		AMUX_ERR("Can't get poll descriptor\n");
-		return -1;
-	}
-#else
-	poll(sfd, snr, 0);
-	pthread_mutex_lock(&amx->lock);
-	if(snd_pcm_avail_update(amx->slave) <
-			(snd_pcm_sframes_t)amx->io.period_size) {
-		if(amx->pfdnr == 1)
-			amux_user_block(amx);
-		amx->pfdnr = snr + 1;
-	} else {
-		if(amx->pfdnr != 1)
-			amux_user_unblock(amx);
-		amx->pfdnr = 1;
-	}
-	amx->pfdidx = amx->idx;
-	memcpy(amx->pfd + 1, sfd, snr * sizeof(*sfd));
-	pthread_mutex_unlock(&amx->lock);
-	amux_poll_wake(amx);
-#endif
 	ret = 0;
 out:
 	return ret;
@@ -868,15 +546,12 @@ static snd_pcm_sframes_t amux_pointer(struct snd_pcm_ioplug *io)
  */
 static int amux_poll_descriptors_count(snd_pcm_ioplug_t *io)
 {
+	struct snd_pcm_amux *amx = to_pcm_amux(io);
 	int ret;
-	(void)io;
+
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-#ifdef AMUX_DUPFD
-	ret = AMUX_POLLFD_MAX << 1;
-#else
-	ret = 1;
-#endif
+	ret = poller_descriptors_count(amx->poller);
 	/*
 	 * Amux always exhibit the same number of polling descriptor. So that
 	 * PCM slave switch is tranparent for the user
@@ -897,8 +572,6 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 {
 	struct snd_pcm_amux *amx = to_pcm_amux(io);
 	snd_pcm_state_t state;
-	struct pollfd sfd[AMUX_POLLFD_MAX];
-	int snr;
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
@@ -906,8 +579,6 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		AMUX_ERR("%s: PCM slave switching error\n", __func__);
 		return -EPIPE;
 	}
-
-	/* TODO check nr == AMUX_POLLFD_MAX */
 
 	state = snd_pcm_state(amx->slave);
 	if(state == SND_PCM_STATE_XRUN ||
@@ -924,48 +595,10 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		return -EPIPE;
 	}
 
-	/* Fetch slave poll descriptors (in case of slave switch) */
-	snr = snd_pcm_poll_descriptors_count(amx->slave);
-	if(snr > (int)ARRAY_SIZE(sfd)) {
-		AMUX_ERR("%s: Slave PCM has too many poll fd\n", __func__);
-		return -EINVAL;
+	if(poller_descriptors(amx->poller, pfds, nr) < 0) {
+		AMUX_ERR("Can't get poll descriptor for user\n");
+		return -EPIPE;
 	}
-	if(snd_pcm_poll_descriptors(amx->slave, sfd, snr) < 0) {
-		AMUX_ERR("Can't get poll descriptor\n");
-		return -1;
-	}
-
-#ifdef AMUX_DUPFD
-	if(amux_update_fd(amx, sfd, snr) != 0) {
-		AMUX_ERR("Can't update poll descriptor list\n");
-		return -1;
-	}
-	if(amux_fill_descriptors(amx, pfds, nr) != 0) {
-		AMUX_ERR("Can't build user poll descriptor\n");
-		return -1;
-	}
-#else
-	poll(sfd, snr, 0);
-	pthread_mutex_lock(&amx->lock);
-	if(snd_pcm_avail_update(amx->slave) <
-			(snd_pcm_sframes_t)amx->io.period_size) {
-		if(amx->pfdnr == 1)
-			amux_user_block(amx);
-		amx->pfdnr = snr + 1;
-	} else {
-		if(amx->pfdnr != 1)
-			amux_user_unblock(amx);
-		amx->pfdnr = 1;
-	}
-	amx->pfdidx = amx->idx;
-	memcpy(amx->pfd + 1, sfd, snr * sizeof(*sfd));
-	pthread_mutex_unlock(&amx->lock);
-
-	pfds[0].fd = amx->eventfd;
-	pfds[0].events = POLLIN;
-
-	amux_poll_wake(amx);
-#endif
 
 	return nr;
 }
@@ -992,48 +625,11 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		return -EPIPE;
 	}
 
-#ifdef AMUX_DUPFD
-	do {
-		struct pollfd sfd[AMUX_POLLFD_MAX];
-		(void)pfds;
-		nfds = snd_pcm_poll_descriptors_count(amx->slave);
-		snd_pcm_poll_descriptors(amx->slave, sfd, nfds);
-		poll(sfd, nfds, 0);
-		snd_pcm_poll_descriptors_revents(amx->slave, sfd, nfds,
-				revents);
-		/* We woke up to soon, playback is not ready */
-		if(snd_pcm_avail_update(amx->slave) <
-				(snd_pcm_sframes_t)io->period_size)
-			*revents &= ~POLLOUT;
-	} while(0);
-#else
-	*revents = 0;
-	if((nfds != 1) || (pfds[0].fd != amx->eventfd))
-		return 0;
-
-	if(pfds[0].revents != POLLIN)
-		return 0;
-
-	pthread_mutex_lock(&amx->lock);
-	if(amx->pfdidx != amx->idx) {
-		pthread_mutex_unlock(&amx->lock);
-		goto out;
+	if(poller_poll_revents(amx->poller, pfds, nfds, revents) != 0) {
+		AMUX_ERR("%s: poller revents error\n", __func__);
+		return -EPIPE;
 	}
 
-	snd_pcm_poll_descriptors_revents(amx->slave, amx->pfd + 1,
-			snd_pcm_poll_descriptors_count(amx->slave), revents);
-
-	if(snd_pcm_avail_update(amx->slave) <
-			(snd_pcm_sframes_t)amx->io.period_size) {
-		/* We woke up to soon, playback is not ready */
-		if(amx->pfdnr == 1)
-			amux_user_block(amx);
-		amx->pfdnr = snd_pcm_poll_descriptors_count(amx->slave) + 1;
-		amux_poll_wake(amx);
-	}
-	pthread_mutex_unlock(&amx->lock);
-out:
-#endif
 	return 0;
 }
 
@@ -1095,17 +691,7 @@ static snd_pcm_sframes_t amux_transfer(struct snd_pcm_ioplug *io,
 	else if(state != SND_PCM_STATE_RUNNING)
 		return -EINVAL;
 
-#ifndef AMUX_DUPFD
-	if(snd_pcm_avail_update(amx->slave) <
-			(snd_pcm_sframes_t)amx->io.period_size) {
-		pthread_mutex_lock(&amx->lock);
-		if(amx->pfdnr == 1)
-			amux_user_block(amx);
-		amx->pfdnr = snd_pcm_poll_descriptors_count(amx->slave) + 1;
-		pthread_mutex_unlock(&amx->lock);
-		amux_poll_wake(amx);
-	}
-#endif
+	poller_transfer(amx->poller);
 
 	if(ret > 0)
 		ret = xfer;
@@ -1149,52 +735,6 @@ static struct snd_pcm_ioplug_callback amux_ops = {
 	.poll_descriptors = amux_poll_descriptors,
 	.dump = amux_dump,
 };
-
-#ifndef AMUX_DUPFD
-/**
- * Thread that poll slave in background to detect when it is ready
- */
-void *amux_poll_thread(void *arg)
-{
-	struct snd_pcm_amux *amx = (struct snd_pcm_amux *)arg;
-	struct pollfd pfd[AMUX_POLLFD_MAX + 1];
-	size_t nr, idx;
-	int ret;
-
-	while(!amx->stop) {
-		pthread_mutex_lock(&amx->lock);
-		nr = amx->pfdnr;
-		idx = amx->pfdidx;
-		memcpy(pfd, amx->pfd, nr * sizeof(*pfd));
-		pthread_mutex_unlock(&amx->lock);
-
-		ret = poll(pfd, nr, -1);
-		if(ret < 0) {
-			AMUX_ERR("Poll error\n");
-			break;
-		}
-		if(pfd[0].revents != 0) {
-			amux_poll_ack(amx);
-			if(ret == 1)
-				continue;
-		}
-
-		/* Fill poll result */
-		pthread_mutex_lock(&amx->lock);
-		/* Slave switched while poll returned */
-		if(amx->pfdidx != idx) {
-			pthread_mutex_unlock(&amx->lock);
-			continue;
-		}
-		memcpy(amx->pfd, pfd, nr * sizeof(*pfd));
-		amx->pfdnr = 1;
-		pthread_mutex_unlock(&amx->lock);
-		amux_user_unblock(amx);
-	}
-
-	return NULL;
-}
-#endif
 
 /**
  * AMUX plugin's open function
@@ -1286,16 +826,6 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	ret = snd_pcm_ioplug_create(&amx->io, name, stream, mode);
 	if(ret != 0)
 		goto out;
-
-#ifndef AMUX_DUPFD
-	ret = pthread_create(&amx->pollth, NULL, amux_poll_thread,
-			(void *)amx);
-	if(ret != 0) {
-		AMUX_ERR("Cannot create poll thread\n");
-		snd_pcm_ioplug_delete(&amx->io);
-		goto out;
-	}
-#endif
 
 	*pcmp = amx->io.pcm;
 

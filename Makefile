@@ -1,10 +1,10 @@
 CC=gcc
-CFLAGS= -W -Wall -DPIC -fPIC -O0 -g
-LDFLAGS= -lasound
+CFLAGS= -W -Wall -DPIC -fPIC -O0 -g -I include
+LDFLAGS= -lasound -T $(SRCDIR)/script.ld
 
 SRCDIR=src
 BUILDDIR=build
-SRC=amux.c
+SRC=amux.c poller/poller.c
 OBJ=$(SRC:%.c=$(BUILDDIR)/%.o)
 DEPEND=$(SRC:%.c=$(BUILDDIR)/%.d)
 LIBRARY=$(BUILDDIR)/libasound_pcm_amux.so
