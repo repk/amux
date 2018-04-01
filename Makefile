@@ -4,7 +4,7 @@ LDFLAGS= -lasound -T $(SRCDIR)/script.ld
 
 SRCDIR=src
 BUILDDIR=build
-SRC=amux.c poller/poller.c poller/dupfd.c
+SRC=amux.c poller/poller.c poller/dupfd.c poller/thread.c
 OBJ=$(SRC:%.c=$(BUILDDIR)/%.o)
 DEPEND=$(SRC:%.c=$(BUILDDIR)/%.d)
 LIBRARY=$(BUILDDIR)/libasound_pcm_amux.so
