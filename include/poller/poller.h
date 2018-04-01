@@ -1,6 +1,8 @@
 #ifndef _POLLER_H_
 #define _POLLER_H_
 
+#define POLLER_NAME_MAXSZ 64
+
 struct poller;
 
 /**

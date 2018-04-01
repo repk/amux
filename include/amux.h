@@ -101,4 +101,5 @@ struct snd_pcm_amux {
  */
 #define to_pcm_amux(p) (container_of(p, struct snd_pcm_amux, io))
 
+#define POLLER_DEFAULT "dupfd"
 #endif

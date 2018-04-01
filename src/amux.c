@@ -27,12 +27,6 @@ static inline struct snd_pcm_amux *amux_create(void)
 		goto out;
 
 	amx->fd = -1;
-	amx->poller = poller_create(amx, "dupfd", NULL);
-	if(amx->poller == NULL) {
-		free(amx);
-		amx = NULL;
-		goto out;
-	}
 out:
 	return amx;
 }
@@ -49,7 +43,8 @@ static inline void amux_destroy(struct snd_pcm_amux *amx)
 	if(amx == NULL)
 		return;
 
-	poller_destroy(amx->poller);
+	if(amx->poller)
+		poller_destroy(amx->poller);
 
 	if(amx->slave)
 		snd_pcm_close(amx->slave);
@@ -61,6 +56,22 @@ static inline void amux_destroy(struct snd_pcm_amux *amx)
 		close(amx->fd);
 
 	free(amx);
+}
+
+/**
+ * Initialize Amux PCM poller
+ *
+ * @param amx: Amux PCM to intialize poller with
+ * @param name: Poller name
+ * @return: 0 on success, negative number otherwise
+ */
+static inline int amux_poller_init(struct snd_pcm_amux *amx, char const *name)
+{
+	amx->poller = poller_create(amx, name, NULL);
+	if(amx->poller == NULL)
+		return -ENOMEM;
+
+	return 0;
 }
 
 /**
@@ -742,6 +753,7 @@ static struct snd_pcm_ioplug_callback amux_ops = {
 SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	struct snd_pcm_amux *amx;
 	char const *pname = NULL, *fpath = NULL;
+	char const *poller_name = POLLER_DEFAULT;
 	snd_config_iterator_t i, next;
 	int ret = -ENOMEM;
 	char sidx;
@@ -771,6 +783,15 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 			}
 			continue;
 		}
+		if(strcmp(id, "poller") == 0) {
+			ret = snd_config_get_string(cfg, &pname);
+			if(ret < 0) {
+				SNDERR("Invalid poller name");
+				goto out;
+			}
+			poller_name = pname;
+			continue;
+		}
 		if(strcmp(id, "list") == 0) {
 			snd_config_iterator_t _i, _next;
 			snd_config_for_each(_i, _next, cfg) {
@@ -795,6 +816,10 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 		SNDERR("Unknown field %s", id);
 		goto out;
 	}
+
+	ret = amux_poller_init(amx, poller_name);
+	if(ret < 0)
+		goto out;
 
 	ret = open(fpath, O_RDONLY);
 	if(ret < 0)

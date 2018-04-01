@@ -84,8 +84,24 @@ There is two different ways to poll. The dup-poll-mode creates some mock file
 descriptors using dup2 and the thread-mode uses a thread to poll for slave and
 notifies the user through an eventfd.
 
-The default mode is the dup-poll-mode. To switch to thread-mode, one should
-comment the line "#define AMUX_DUPFD" in src/amux.c.
+The default mode is the dup-poll-mode. To switch to thread-mode, one can specify
+poller in asoundrc such as below :
+----------------- 8< ------------------
+pcm.!default {
+	type amux
+	file /tmp/sndcard
+	poller "thread"
+	list [
+		{
+			pcm "sysdefault"
+		}
+	]
+}
+----------------- 8< ------------------
+
+The supported poller configuration strings so far are :
+	- "dupfd" for dup-poll-mode polling
+	- "thread" for thread-mode polling
 
 Limitations
 -----------
