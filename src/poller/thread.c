@@ -72,7 +72,10 @@ static inline void pollthr_wake(struct pollthr *pth)
 static inline void pollthr_ack(struct pollthr *pth)
 {
 	uint64_t discard;
-	read(pth->pfd[0].fd, &discard, sizeof(discard));
+	ssize_t ret;
+	ret = read(pth->pfd[0].fd, &discard, sizeof(discard));
+	if(ret != sizeof(discard))
+		AMUX_ERR("%s: cannot wake up poller thread\n", __func__);
 	(void)discard;
 }
 
