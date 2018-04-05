@@ -152,12 +152,17 @@ static int dupfd_poll_revents(struct poller *p, struct pollfd *pfd, size_t nr,
 {
 	struct pollfd sfd[DUPFD_POLLFD_MAX];
 	size_t snr;
+	int ret;
 	(void)pfd;
 	(void)nr;
 
 	snr = snd_pcm_poll_descriptors_count(p->amx->slave);
 	snd_pcm_poll_descriptors(p->amx->slave, sfd, snr);
-	poll(sfd, snr, 0);
+	ret = poll(sfd, snr, 0);
+	if(ret < 0) {
+		AMUX_ERR("%s: poll() error\n", __func__);
+		return -errno;
+	}
 	snd_pcm_poll_descriptors_revents(p->amx->slave, sfd, snr, revents);
 
 	/* We woke up to soon, playback is not ready */
