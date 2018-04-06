@@ -696,11 +696,20 @@ static snd_pcm_sframes_t amux_transfer(struct snd_pcm_ioplug *io,
 		return -EPIPE;
 
 	/* Check buffers integrity */
-	tmp = snd_pcm_avail(amx->io.pcm);
+	if(amx->asound_kludge) {
+		tmp = amx->io.appl_ptr - amx->io.hw_ptr;
+		if(tmp < 0)
+			tmp += amx->boundary;
+		tmp -= amx->io.buffer_size;
+	} else {
+		tmp = snd_pcm_avail(amx->io.pcm);
+	}
 	ret = snd_pcm_avail_update(amx->slave);
 	if(ret < tmp) {
 		AMUX_ERR("%s: Our buffer is not synchronized with the slave "
-				"one, something bad happened\n", __func__);
+				"one, something bad happened "
+				"(slave %ld / master %ld)\n", __func__,
+				(long)ret, (long)tmp);
 		return -EPIPE;
 	} else if(ret < (snd_pcm_sframes_t)size) {
 		AMUX_ERR("%s: Write size is bigger than available "
