@@ -95,6 +95,10 @@ struct snd_pcm_amux {
 	 * Slave configuration file descriptor
 	 */
 	int fd;
+	/**
+	 * Does asound library version need workarounds
+	 */
+	unsigned char asound_kludge;
 };
 /**
  * Convert an IO plugin interface pointer to Amux PCM structure.

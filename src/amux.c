@@ -14,6 +14,30 @@
 #define AMUX_POLLFD_MAX 4
 
 /**
+ * Check if libasound is old and flawed. Libraries before 1.1.4 need to setup hw
+ * constraints and suffer from dealock.
+ *
+ * @return: 0 if libasound is recent enough, 1 if too old and negative number on
+ * error
+ */
+static inline int amux_libasound_need_kludge(void)
+{
+	unsigned int maj, min, rev;
+	int ret;
+
+	ret = sscanf(snd_asoundlib_version(), "%u.%u.%u", &maj, &min, &rev);
+	if(ret != 3) {
+		AMUX_ERR("%s: Cannot parse libasound version\n", __func__);
+		return -EINVAL;
+	}
+
+	if((maj > 1) || (min > 1) || (rev > 3))
+		return 0;
+
+	return 1;
+}
+
+/**
  * Allocate and init a new amux PCM structure.
  *
  * @return: New amux PCM on success, NULL pointer if allocation failed.
@@ -27,6 +51,8 @@ static inline struct snd_pcm_amux *amux_create(void)
 		goto out;
 
 	amx->fd = -1;
+	if(amux_libasound_need_kludge())
+		amx->asound_kludge = 1;
 out:
 	return amx;
 }
@@ -728,6 +754,52 @@ static void amux_dump(snd_pcm_ioplug_t *io, snd_output_t *out)
 }
 
 /**
+ * Set some hw params constraints needed by some libasound versions to work.
+ *
+ * @param amx: Amux master IO plugin
+ * return: 0 on success, negative number otherwise
+ */
+static int amux_set_hw_constraints(struct snd_pcm_amux *amx)
+{
+	snd_pcm_access_mask_t *amsk;
+	snd_pcm_format_mask_t *fmsk;
+	size_t i, fnr, anr;
+	unsigned int acc[SND_PCM_ACCESS_LAST + 1];
+	unsigned int fmt[SND_PCM_FORMAT_LAST + 1];
+	int ret;
+
+	snd_pcm_access_mask_alloca(&amsk);
+	snd_pcm_format_mask_alloca(&fmsk);
+
+	snd_pcm_access_mask_any(amsk);
+	snd_pcm_format_mask_any(fmsk);
+
+	for(i = 0, anr = 0; i < ARRAY_SIZE(acc); ++i) {
+		if(snd_pcm_access_mask_test(amsk, i)) {
+			acc[anr] = i;
+			++anr;
+		}
+	}
+
+	for(i = 0, fnr = 0; i < ARRAY_SIZE(fmt); ++i) {
+		if(snd_pcm_format_mask_test(fmsk, i)) {
+			fmt[fnr] = i;
+			++fnr;
+		}
+	}
+
+	ret = snd_pcm_ioplug_set_param_list(&amx->io, SND_PCM_IOPLUG_HW_ACCESS,
+			anr, acc);
+	if (ret < 0)
+		goto out;
+
+	ret = snd_pcm_ioplug_set_param_list(&amx->io, SND_PCM_IOPLUG_HW_FORMAT,
+			fnr, fmt);
+out:
+	return ret;
+}
+
+/**
  * Amux IO plugin callbacks
  */
 static struct snd_pcm_ioplug_callback amux_ops = {
@@ -851,6 +923,10 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	ret = snd_pcm_ioplug_create(&amx->io, name, stream, mode);
 	if(ret != 0)
 		goto out;
+
+	/* Prior 1.1.4 asound libraries need to set minimal hw constraints */
+	if(amx->asound_kludge)
+		amux_set_hw_constraints(amx);
 
 	*pcmp = amx->io.pcm;
 
