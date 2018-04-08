@@ -98,7 +98,10 @@ static inline void pollthr_user_unblock(struct pollthr *pth)
 static inline void pollthr_user_block(struct pollthr *pth)
 {
 	uint64_t discard;
-	read(pth->eventfd, &discard, sizeof(discard));
+	ssize_t ret;
+	ret = read(pth->eventfd, &discard, sizeof(discard));
+	if(ret != sizeof(discard))
+		AMUX_ERR("%s: cannot wake up poller thread\n", __func__);
 	(void)discard;
 }
 
