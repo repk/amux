@@ -248,6 +248,7 @@ static int pollthr_set_slave(struct poller *p)
 	struct pollthr *pth = to_pollthr(p);
 	struct pollfd sfd[POLLTHR_POLLFD_MAX];
 	size_t snr;
+	int ret;
 
 	AMUX_DBG("%s: enter\n", __func__);
 
@@ -262,7 +263,11 @@ static int pollthr_set_slave(struct poller *p)
 		return -1;
 	}
 
-	poll(sfd, snr, 0);
+	ret = poll(sfd, snr, 0);
+	if(ret < 0) {
+		AMUX_ERR("%s: poll() error\n", __func__);
+		return -errno;
+	}
 	pthread_mutex_lock(&pth->lock);
 	if(snd_pcm_avail_update(p->amx->slave) <
 			(snd_pcm_sframes_t)p->amx->io.period_size) {
