@@ -839,6 +839,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	int ret = -ENOMEM;
 	char sidx;
 
+	(void)root;
+
 	AMUX_DBG("%s: enter\n", __func__);
 
 	amx = amux_create();
