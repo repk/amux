@@ -901,6 +901,12 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 		goto out;
 	}
 
+	if(fpath == NULL) {
+		ret = -EINVAL;
+		AMUX_ERR("Missing mandatory file path in amux PCM config\n");
+		goto out;
+	}
+
 	ret = amux_poller_init(amx, poller_name);
 	if(ret < 0)
 		goto out;
