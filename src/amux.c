@@ -897,6 +897,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 			continue;
 		}
 		SNDERR("Unknown field %s", id);
+		ret = -EINVAL;
 		goto out;
 	}
 
