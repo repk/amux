@@ -111,7 +111,7 @@ static inline int amux_check_card(struct snd_pcm_amux *amx)
 {
 	ssize_t n;
 	int ret = -1;
-	char card;
+	char card = '0';
 
 	lseek(amx->fd, SEEK_SET, 0);
 
@@ -837,7 +837,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	char const *poller_name = POLLER_DEFAULT;
 	snd_config_iterator_t i, next;
 	int ret = -ENOMEM;
-	char sidx;
+	char sidx = '0';
 
 	(void)root;
 
@@ -911,7 +911,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	if(ret < 0)
 		goto out;
 
-	ret = open(fpath, O_RDONLY);
+	ret = open(fpath, O_RDONLY | O_CREAT, S_IRUSR | S_IWUSR);
 	if(ret < 0)
 		goto out;
 
