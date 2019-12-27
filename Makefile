@@ -1,13 +1,25 @@
 CC=gcc
 CFLAGS= -W -Wall -DPIC -fPIC -O0 -g -I include
-LDFLAGS= -lasound -T $(SRCDIR)/script.ld
+LDFLAGS=
 
-SRCDIR=src
 BUILDDIR=build
-SRC=amux.c poller/poller.c poller/dupfd.c poller/thread.c
-OBJ=$(SRC:%.c=$(BUILDDIR)/%.o)
-DEPEND=$(SRC:%.c=$(BUILDDIR)/%.d)
-LIBRARY=$(BUILDDIR)/libasound_pcm_amux.so
+
+# Amux library
+AML_SRCDIR=src
+AML_BUILDDIR=$(BUILDDIR)/aml
+AML_SRC= amux.c poller/poller.c poller/dupfd.c poller/thread.c
+AML_OBJ=$(AML_SRC:%.c=$(AML_BUILDDIR)/%.o)
+AML_DEPEND=$(AML_SRC:%.c=$(AML_BUILDDIR)/%.d)
+AML_LDFLAGS= -lasound -T $(AML_SRCDIR)/script.ld
+AML=$(if $(AML_SRC),$(BUILDDIR)/libasound_pcm_amux.so)
+
+# Amux control program
+ACTL_SRCDIR=amuxctl
+ACTL_BUILDDIR=$(BUILDDIR)/actl
+ACTL_SRC=
+ACTL_OBJ=$(ACTL_SRC:%.c=$(ACTL_BUILDDIR)/%.o)
+ACTL_DEPEND=$(ACTL_SRC:%.c=$(ACTL_BUILDDIR)/%.d)
+ACTL=$(if $(ACTL_SRC),$(BUILDDIR)/amuxctl)
 
 define _reverse
 $(if $(1),\
@@ -28,24 +40,45 @@ define rm-dir
 $(if $(1), (rmdir $(1) > /dev/null 2>&1) || true)
 endef
 
-all: $(LIBRARY)
+all: $(AML) $(ACTL)
 
-$(LIBRARY): $(OBJ)
-	gcc -shared -o $@ $^ $(LDFLAGS)
+$(AML): $(AML_OBJ)
+	gcc -shared -o $@ $^ $(LDFLAGS) $(AML_LDFLAGS)
 
-$(BUILDDIR)/%.o: $(SRCDIR)/%.c
+$(ACTL): $(ACTL_OBJ)
+	gcc -o $@ $^ $(LDFLAGS) $(ACTL_LDFLAGS)
+
+$(AML_BUILDDIR)/%.o: $(AML_SRCDIR)/%.c
 	@mkdir -p $(dir $(@))
-	gcc -MMD -c -o $@ $< $(CFLAGS)
+	gcc -MMD -c -o $@ $< $(CFLAGS) $(AML_CFLAGS)
+
+$(ACTL_BUILDDIR)/%.o: $(ACTL_SRCDIR)/%.c
+	@mkdir -p $(dir $(@))
+	gcc -MMD -c -o $@ $< $(CFLAGS) $(ACTL_CFLAGS)
+
+amlclean:
+	$(call rm-file,$(AML_OBJ))
+	$(call rm-file,$(AML_DEPEND))
+	$(call rm-dir,$(call reverse,$(dir $(AML_OBJ))))
+	$(call rm-dir,$(AML_BUILDDIR))
+
+actlclean:
+	$(call rm-file,$(ACTL_OBJ))
+	$(call rm-file,$(ACTL_DEPEND))
+	$(call rm-dir,$(call reverse,$(dir $(ACTL_OBJ))))
+	$(call rm-dir,$(ACTL_BUILDDIR))
+
+amldistclean: amlclean
+	$(call rm-file,$(AML))
+
+actldistclean: actlclean
+	$(call rm-file,$(ACTL))
 
 .PHONY: clean
 
-clean:
-	$(call rm-file,$(OBJ))
-	$(call rm-file,$(DEPEND))
-	$(call rm-dir,$(call reverse,$(dir $(OBJ))))
-	$(call rm-dir,$(BUILDDIR))
+clean: amlclean actlclean
 
-distclean: clean
-	$(call rm-file,$(LIBRARY))
+distclean: amldistclean actldistclean
 
--include $(DEPEND)
+-include $(AML_DEPEND)
+-include $(ACTL_DEPEND)
