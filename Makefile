@@ -20,6 +20,14 @@ define reverse
 $(strip $(call _reverse,$(sort $(1))))
 endef
 
+define rm-file
+$(if $(1), rm -f $(1))
+endef
+
+define rm-dir
+$(if $(1), (rmdir $(1) > /dev/null 2>&1) || true)
+endef
+
 all: $(LIBRARY)
 
 $(LIBRARY): $(OBJ)
@@ -32,12 +40,12 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 .PHONY: clean
 
 clean:
-	rm -f $(OBJ)
-	rm -f $(DEPEND)
-	(rmdir $(call reverse,$(dir $(OBJ))) > /dev/null 2>&1) || true
-	(rmdir $(BUILDDIR) > /dev/null 2>&1) || true
+	$(call rm-file,$(OBJ))
+	$(call rm-file,$(DEPEND))
+	$(call rm-dir,$(call reverse,$(dir $(OBJ))))
+	$(call rm-dir,$(BUILDDIR))
 
 distclean: clean
-	rm -f $(LIBRARY)
+	$(call rm-file,$(LIBRARY))
 
 -include $(DEPEND)
