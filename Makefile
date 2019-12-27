@@ -34,10 +34,10 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 clean:
 	rm -f $(OBJ)
 	rm -f $(DEPEND)
+	(rmdir $(call reverse,$(dir $(OBJ))) > /dev/null 2>&1) || true
+	(rmdir $(BUILDDIR) > /dev/null 2>&1) || true
 
 distclean: clean
 	rm -f $(LIBRARY)
-	(rmdir $(call reverse,$(dir $(OBJ))) > /dev/null 2>&1) || true
-	(rmdir $(BUILDDIR) > /dev/null 2>&1) || true
 
 -include $(DEPEND)
