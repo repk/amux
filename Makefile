@@ -9,6 +9,17 @@ OBJ=$(SRC:%.c=$(BUILDDIR)/%.o)
 DEPEND=$(SRC:%.c=$(BUILDDIR)/%.d)
 LIBRARY=$(BUILDDIR)/libasound_pcm_amux.so
 
+define _reverse
+$(if $(1),\
+	$(call _reverse,$(wordlist 2,$(words $(1)),$(1)))\
+	$(firstword $(1))\
+)
+endef
+
+define reverse
+$(strip $(call _reverse,$(sort $(1))))
+endef
+
 all: $(LIBRARY)
 
 $(LIBRARY): $(OBJ)
@@ -26,7 +37,7 @@ clean:
 
 distclean: clean
 	rm -f $(LIBRARY)
-	(rmdir $(dir $(OBJ)) > /dev/null 2>&1) || true
+	(rmdir $(call reverse,$(dir $(OBJ))) > /dev/null 2>&1) || true
 	(rmdir $(BUILDDIR) > /dev/null 2>&1) || true
 
 -include $(DEPEND)
