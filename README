@@ -32,45 +32,45 @@ pcm_type.!amux {
 	}
 }
 
+# This one is just to show that one can defines its own PCM and use them with
+# amux
 pcm.!usb {
         type empty
         slave {
 		pcm "cards.USB-Audio.pcm.default:CARD=1"
         }
+	# Use description hint to get it listed with amuxctl -l
+	hint {
+		description "Output to usb plugged sndcard 1"
+	}
 }
 
 pcm.!default {
         type amux
         file /tmp/sndcard
-        list [
-                {
-                        pcm "sysdefault"
-                }
-                {
-                        pcm "usb"
-                }
-                {
-                        pcm "file:FILE=/tmp/audio-data.raw"
-                }
-                {
-                        pcm "null"
-                }
-        ]
 }
 EOF
 ----------------- 8< ------------------
 
-This configure amux plugin to multiplex 4 PCM cards, the system default, an usb
-one, a fake file and a null PCM. The plugin will select the PCM card to use
-accordingly to /tmp/sndcard file.
+This configure amux plugin to be used by default. The plugin will select the
+PCM card to use accordingly to /tmp/sndcard file.
 
 Usage
 -----
 
-To use this plugin, first select the soundcard index to use. For example
-with the previous configuration, if you want to use the usb card, use the
-following:
- $ echo -n "1" > /tmp/sndcard
+To select the PCM to use, please use amuxctl tool instead of directly writting
+into the config file . For example if you want to use the usb card that you
+defined as in asoundrc example above, use the following:
+ $ amuxctl -s "usb"
+
+To dump raw audio in a file
+ $ amuxctl -s "file:FILE=/tmp/audio-data.raw"
+
+To use HDMI
+ $ amuxctl -s "cards.pcm.hdmi"
+
+Or back to system default
+ $ amuxctl -s "sysdefault"
 
 Then test that everything works with:
  $ export ALSA_CONFIG_PATH=<path-to-asoundrc>
@@ -91,11 +91,6 @@ pcm.!default {
 	type amux
 	file /tmp/sndcard
 	poller "thread"
-	list [
-		{
-			pcm "sysdefault"
-		}
-	]
 }
 ----------------- 8< ------------------
 
