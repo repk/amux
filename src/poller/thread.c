@@ -31,9 +31,9 @@ struct pollthr {
 	 */
 	size_t pfdnr;
 	/**
-	 * Index of slave associated with the current poll array
+	 * Name of slave currently associated with poll array
 	 */
-	size_t pfdidx;
+	char sname[CARD_NAMESZ];
 	/**
 	 * Lock for poll fd array
 	 */
@@ -134,7 +134,7 @@ static inline int pollthr_init(struct pollthr *pth)
 	pth->pfd[0].events = POLLIN;
 
 	pth->pfdnr = 1;
-	pth->pfdidx = -1;
+	pth->sname[0] = '\0';
 	pth->stop = 0;
 	pthread_mutex_init(&pth->lock, NULL);
 
@@ -217,7 +217,7 @@ static int pollthr_poll_revents(struct poller *p, struct pollfd *pfd,
 		goto out;
 
 	pthread_mutex_lock(&pth->lock);
-	if(pth->pfdidx != p->amx->idx) {
+	if(strcmp(pth->sname, p->amx->sname) != 0) {
 		pthread_mutex_unlock(&pth->lock);
 		goto out;
 	}
@@ -287,7 +287,7 @@ static int pollthr_set_slave(struct poller *p)
 			pollthr_user_unblock(pth);
 		pth->pfdnr = 1;
 	}
-	pth->pfdidx = p->amx->idx;
+	strcpy(pth->sname, p->amx->sname);
 	memcpy(pth->pfd + 1, sfd, snr * sizeof(*sfd));
 	pthread_mutex_unlock(&pth->lock);
 	pollthr_wake(pth);
@@ -324,13 +324,14 @@ static void *pollthr_thread(void *arg)
 {
 	struct pollthr *pth = (struct pollthr *)arg;
 	struct pollfd pfd[POLLTHR_POLLFD_MAX + 1];
-	size_t nr, idx;
+	size_t nr;
 	int ret;
+	char sname[CARD_NAMESZ];
 
 	while(!pth->stop) {
 		pthread_mutex_lock(&pth->lock);
 		nr = pth->pfdnr;
-		idx = pth->pfdidx;
+		strcpy(sname, pth->sname);
 		memcpy(pfd, pth->pfd, nr * sizeof(*pfd));
 		pthread_mutex_unlock(&pth->lock);
 
@@ -348,7 +349,7 @@ static void *pollthr_thread(void *arg)
 		/* Fill poll result */
 		pthread_mutex_lock(&pth->lock);
 		/* Slave switched while poll returned */
-		if(pth->pfdidx != idx) {
+		if(strcmp(pth->sname, sname) != 0) {
 			pthread_mutex_unlock(&pth->lock);
 			continue;
 		}

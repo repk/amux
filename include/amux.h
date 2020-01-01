@@ -51,6 +51,7 @@
 
 struct poller;
 
+#define CARD_NAMESZ 128
 /**
  * Amux master PCM structure
  */
@@ -60,13 +61,13 @@ struct snd_pcm_amux {
 	 */
 	struct snd_pcm_ioplug io;
 	/**
+	 * Currently used slave name
+	 */
+	char sname[CARD_NAMESZ];
+	/**
 	 * Currently selected PCM slave
 	 */
 	snd_pcm_t *slave;
-	/**
-	 * List of multiplexed slaves
-	 */
-	char *sname[SLAVENR];
 	/**
 	 * Poller instance, used to interface different way of poll slave
 	 */
@@ -79,14 +80,6 @@ struct snd_pcm_amux {
 	 * Configured ring buffer boundary
 	 */
 	snd_pcm_uframes_t boundary;
-	/**
-	 * Total number of selectable multiplexed slave
-	 */
-	size_t slavenr;
-	/**
-	 * Currently used slave index in sname array
-	 */
-	size_t idx;
 	/**
 	 * Current open mode
 	 */

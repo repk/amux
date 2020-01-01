@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <stddef.h>
 #include <errno.h>
+#include <sys/file.h>
 
 #include <alsa/asoundlib.h>
 #include <alsa/pcm_external.h>
@@ -10,8 +11,8 @@
 #include "amux.h"
 #include "poller/poller.h"
 
-#define CARD_STRSZ 32
 #define AMUX_POLLFD_MAX 4
+#define AMUX_SLAVE_DFT "sysdefault"
 
 /**
  * Check if libasound is old and flawed. Libraries before 1.1.4 need to setup hw
@@ -64,8 +65,6 @@ out:
  */
 static inline void amux_destroy(struct snd_pcm_amux *amx)
 {
-	size_t i;
-
 	if(amx == NULL)
 		return;
 
@@ -74,9 +73,6 @@ static inline void amux_destroy(struct snd_pcm_amux *amx)
 
 	if(amx->slave)
 		snd_pcm_close(amx->slave);
-
-	for(i = 0; i < amx->slavenr; ++i)
-		free(amx->sname[i]);
 
 	if(amx->fd >= 0)
 		close(amx->fd);
@@ -101,6 +97,77 @@ static inline int amux_poller_init(struct snd_pcm_amux *amx, char const *name)
 }
 
 /**
+ * If slave PCM has not been configured set a default one
+ *
+ * @param amx: Amux PCM to set default slave to
+ * @param path: Path to Amux PCM configuration
+ * @return: 0 on success, negative number otherwise
+ */
+static inline int amux_set_default_pcm(struct snd_pcm_amux *amx,
+		char const *path)
+{
+	ssize_t ret;
+	size_t cur = 0, len = strlen(AMUX_SLAVE_DFT);
+	char const *dft = AMUX_SLAVE_DFT;
+	int fd;
+
+	ret = open(path, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
+	if(ret < 0)
+		goto out;
+
+	fd = (int)ret;
+	flock(fd, LOCK_EX);
+	do {
+		ret = write(fd, dft + cur, len - cur);
+		if((ret < 0) && (errno == EINTR))
+			continue;
+		if(ret < 0)
+			goto unlock;
+		cur += (size_t)ret;
+	} while(cur < len);
+
+	strncpy(amx->sname, AMUX_SLAVE_DFT, sizeof(amx->sname) - 1);
+	amx->sname[sizeof(amx->sname) - 1] = '\0';
+unlock:
+	flock(fd, LOCK_UN);
+	close(fd);
+out:
+	return ret;
+}
+
+/**
+ * Read slave PCM configuration
+ *
+ * @param amx: Amux PCM to read configuration from
+ * @param pcm: Filled with name of configured PCM
+ * @param len: Max length of pcm output buffer
+ * @return: 0 on success, negative number otherwise
+ */
+static inline int amux_read_pcm(struct snd_pcm_amux *amx, char *pcm,
+		size_t len)
+{
+	ssize_t ret;
+	size_t cur = 0;
+
+	if(len == 0)
+		return -ENOMEM;
+
+	do {
+		ret = read(amx->fd, pcm + cur, len - 1 - cur);
+		if((ret < 0) && (errno == EINTR))
+			continue;
+		if(ret < 0)
+			goto out;
+		cur += (size_t)ret;
+	} while(ret != 0);
+
+	pcm[cur] = '\0';
+
+out:
+	return ret;
+}
+
+/**
  * Check if the configured slave matches the currently used one.
  *
  * @param amx: Amux master PCM
@@ -109,22 +176,27 @@ static inline int amux_poller_init(struct snd_pcm_amux *amx, char const *name)
  */
 static inline int amux_check_card(struct snd_pcm_amux *amx)
 {
-	ssize_t n;
-	int ret = -1;
-	char card = '0';
+	int ret;
+	char card[CARD_NAMESZ] = "default";
+
+	/* Someone is updating config, assume card has not changed yet */
+	ret = flock(amx->fd, LOCK_SH | LOCK_NB);
+	if(ret == EWOULDBLOCK)
+		return 0;
 
 	lseek(amx->fd, SEEK_SET, 0);
 
-	n = read(amx->fd, &card, 1);
-	if(n < 0)
+	ret = amux_read_pcm(amx, card, sizeof(card));
+	flock(amx->fd, LOCK_UN);
+	if(ret < 0)
 		goto out;
 
-	card -= '0';
-	if((size_t)card == amx->idx) {
-		ret = 0;
+	if(strcmp(card, amx->sname) != 0) {
+		ret = -1;
 		goto out;
 	}
 
+	ret = 0;
 out:
 	return ret;
 }
@@ -409,10 +481,10 @@ out:
  * Configure new slave PCM.
  *
  * @param amx: Amux master.
- * @param idx: New slave index.
+ * @param sname: New slave name.
  * @return: 0 on success, negative number otherwise.
  */
-static int amux_cfg_slave(struct snd_pcm_amux *amx, size_t idx)
+static int amux_cfg_slave(struct snd_pcm_amux *amx, char const *sname)
 {
 	snd_pcm_hw_params_t *hw;
 	snd_pcm_sw_params_t *sw;
@@ -420,17 +492,10 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, size_t idx)
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, &amx->io);
 
-	if(idx > amx->slavenr) {
-		AMUX_ERR("%s: Index (%lu) invalid\n", __func__,
-				(unsigned long)idx);
-		return -EINVAL;
-	}
-
-	amx->idx = idx;
+	strncpy(amx->sname, sname, sizeof(amx->sname) - 1);
 	snd_pcm_drop(amx->slave);
 	snd_pcm_close(amx->slave);
-	ret = snd_pcm_open(&amx->slave, amx->sname[idx], amx->stream,
-			amx->mode);
+	ret = snd_pcm_open(&amx->slave, amx->sname, amx->stream, amx->mode);
 	if(ret != 0) {
 		AMUX_ERR("%s: snd_pcm_open error\n", __func__);
 		goto out;
@@ -497,22 +562,26 @@ out:
  */
 static int amux_switch(struct snd_pcm_amux *amx)
 {
-	ssize_t n;
 	int ret = -1;
-	char card = '0' + amx->idx;
+	char card[CARD_NAMESZ];
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, &amx->io);
 
 	lseek(amx->fd, SEEK_SET, 0);
+	ret = flock(amx->fd, LOCK_SH | LOCK_NB);
+	if((ret < 0) && (errno == EWOULDBLOCK))
+		return 0;
+	if(ret < 0)
+		goto out;
 
-	n = read(amx->fd, &card, 1);
-	if(n < 0) {
+	ret = amux_read_pcm(amx, card, sizeof(card));
+	flock(amx->fd, LOCK_UN);
+	if(ret < 0) {
 		perror("Cannot read");
 		goto out;
 	}
 
-	card -= '0';
-	if((size_t)card == amx->idx) {
+	if(strcmp(card, amx->sname) == 0) {
 		ret = 0;
 		goto out;
 	}
@@ -837,7 +906,6 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	char const *poller_name = POLLER_DEFAULT;
 	snd_config_iterator_t i, next;
 	int ret = -ENOMEM;
-	char sidx = '0';
 
 	(void)root;
 
@@ -875,27 +943,6 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 			poller_name = pname;
 			continue;
 		}
-		if(strcmp(id, "list") == 0) {
-			snd_config_iterator_t _i, _next;
-			snd_config_for_each(_i, _next, cfg) {
-				snd_config_t *_cfg =
-					snd_config_iterator_entry(_i);
-				snd_config_t *pc;
-				ret = snd_config_search(_cfg, "pcm", &pc);
-				if(ret != 0) {
-					SNDERR("Invalid slave for %s", name);
-					goto out;
-				}
-				ret = snd_config_get_string(pc, &pname);
-				if(ret < 0) {
-					SNDERR("Invalid slave name for %s",
-							name);
-					goto out;
-				}
-				amx->sname[amx->slavenr++] = strdup(pname);
-			}
-			continue;
-		}
 		SNDERR("Unknown field %s", id);
 		ret = -EINVAL;
 		goto out;
@@ -916,18 +963,21 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 		goto out;
 
 	amx->fd = ret;
-	ret = read(amx->fd, &sidx, 1);
+
+	/* Get configured card */
+	flock(amx->fd, LOCK_SH);
+	ret = amux_read_pcm(amx, amx->sname, sizeof(amx->sname));
+	flock(amx->fd, LOCK_UN);
 	if(ret < 0)
 		goto out;
 
-	sidx -= '0';
-	if((sidx < 0) || ((size_t)sidx > amx->slavenr)) {
-		ret = -EINVAL;
-		goto out;
+	if(amx->sname[0] == '\0') {
+		ret = amux_set_default_pcm(amx, fpath);
+		if(ret < 0)
+			goto out;
 	}
 
-	amx->idx = sidx;
-	ret = snd_pcm_open(&amx->slave, amx->sname[amx->idx], stream, mode);
+	ret = snd_pcm_open(&amx->slave, amx->sname, stream, mode);
 	if(ret != 0)
 		goto out;
 
