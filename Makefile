@@ -16,10 +16,16 @@ AML=$(if $(AML_SRC),$(BUILDDIR)/libasound_pcm_amux.so)
 # Amux control program
 ACTL_SRCDIR=amuxctl
 ACTL_BUILDDIR=$(BUILDDIR)/actl
-ACTL_SRC=
+ACTL_SRC=main.c pcmlist.c opt.c
 ACTL_OBJ=$(ACTL_SRC:%.c=$(ACTL_BUILDDIR)/%.o)
 ACTL_DEPEND=$(ACTL_SRC:%.c=$(ACTL_BUILDDIR)/%.d)
+ACTL_LDFLAGS= -lasound
 ACTL=$(if $(ACTL_SRC),$(BUILDDIR)/amuxctl)
+
+ifeq ($(DEBUG),1)
+ACTL_CFLAGS+=-ggdb -fno-omit-frame-pointer -fsanitize=address -fsanitize=leak
+ACTL_LDFLAGS:=-lasan $(ACTL_LDFLAGS)
+endif
 
 define _reverse
 $(if $(1),\
