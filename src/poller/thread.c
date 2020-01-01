@@ -206,6 +206,7 @@ static int pollthr_poll_revents(struct poller *p, struct pollfd *pfd,
 		size_t nr, unsigned short *revents)
 {
 	struct pollthr *pth = to_pollthr(p);
+	snd_pcm_sframes_t avail;
 	AMUX_DBG("%s: enter\n", __func__);
 
 	*revents = 0;
@@ -225,8 +226,12 @@ static int pollthr_poll_revents(struct poller *p, struct pollfd *pfd,
 			snd_pcm_poll_descriptors_count(p->amx->slave),
 			revents);
 
-	if(snd_pcm_avail_update(p->amx->slave) <
-			(snd_pcm_sframes_t)p->amx->io.period_size) {
+	avail = snd_pcm_avail_update(p->amx->slave);
+	if (avail < 0) {
+		pthread_mutex_unlock(&pth->lock);
+		return avail;
+	}
+	if (avail < (snd_pcm_sframes_t)p->amx->io.period_size) {
 		/* We woke up to soon, playback is not ready */
 		if(pth->pfdnr == 1)
 			pollthr_user_block(pth);

@@ -654,6 +654,7 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		unsigned int nfds, unsigned short *revents)
 {
 	struct snd_pcm_amux *amx = to_pcm_amux(io);
+	int ret;
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
@@ -662,10 +663,9 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 		return -EPIPE;
 	}
 
-	if(poller_poll_revents(amx->poller, pfds, nfds, revents) != 0) {
-		AMUX_ERR("%s: poller revents error\n", __func__);
-		return -EPIPE;
-	}
+	ret = poller_poll_revents(amx->poller, pfds, nfds, revents);
+	if (ret != 0)
+		return ret;
 
 	return 0;
 }

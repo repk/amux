@@ -151,6 +151,7 @@ static int dupfd_poll_revents(struct poller *p, struct pollfd *pfd, size_t nr,
 		unsigned short *revents)
 {
 	struct pollfd sfd[DUPFD_POLLFD_MAX];
+	snd_pcm_sframes_t avail;
 	size_t snr;
 	int ret;
 	(void)pfd;
@@ -165,9 +166,12 @@ static int dupfd_poll_revents(struct poller *p, struct pollfd *pfd, size_t nr,
 	}
 	snd_pcm_poll_descriptors_revents(p->amx->slave, sfd, snr, revents);
 
+	avail = (snd_pcm_sframes_t)snd_pcm_avail_update(p->amx->slave);
+	if (avail < 0)
+		return avail;
+
 	/* We woke up to soon, playback is not ready */
-	if(snd_pcm_avail_update(p->amx->slave) <
-			(snd_pcm_sframes_t)p->amx->io.period_size)
+	if((avail < (snd_pcm_sframes_t)p->amx->io.period_size))
 		*revents &= ~POLLOUT;
 
 	return 0;
