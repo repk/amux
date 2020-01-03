@@ -13,6 +13,21 @@ struct amux_ctx {
 	struct pcmlst plst;
 };
 
+/*
+ * Add stub for missing snd_config_{ref,unref} added in 1.1.2
+ */
+#if (SND_LIB_VERSION < ((1 << 16) | (1 << 8) | (2 << 8)))
+void snd_config_ref(snd_config_t *top)
+{
+	(void)top;
+}
+
+void snd_config_unref(snd_config_t *top)
+{
+	(void)top;
+}
+#endif
+
 static char const *cfg_get_str(snd_config_t *cfg, char const *key)
 {
 	char const *str = NULL;
