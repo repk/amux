@@ -41,16 +41,13 @@ static int amux_cfg_parse(struct amux_ctx *ctx)
 	char const *str;
 	int ret;
 
-	ret = snd_config_update_ref(&ctx->top);
-	if(ret < 0) {
-		fprintf(stderr, "Cannot open config\n");
-		goto err;
-	}
+	ctx->top = snd_config;
+	snd_config_ref(ctx->top);
 
 	ret = snd_config_search(ctx->top, "pcm.default", &dft);
 	if(ret < 0) {
 		fprintf(stderr, "Cannot get default config\n");
-		goto unref;
+		goto err;
 	}
 
 	ret = -EINVAL;
@@ -63,7 +60,6 @@ static int amux_cfg_parse(struct amux_ctx *ctx)
 		goto unref;
 
 	ctx->file = str;
-
 	return 0;
 unref:
 	snd_config_unref(ctx->top);
@@ -173,6 +169,7 @@ err:
 static void amux_ctx_cleanup(struct amux_ctx *actx)
 {
 	snd_config_unref(actx->top);
+	/* Cleanup alsalib mess */
 	snd_config_update_free_global();
 	pcmlst_cleanup(&actx->plst);
 }
