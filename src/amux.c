@@ -176,8 +176,11 @@ out:
  */
 static inline int amux_check_card(struct snd_pcm_amux *amx)
 {
-	int ret;
+	int ret = -1;
 	char card[CARD_NAMESZ] = "default";
+
+	if(amx->slave == NULL)
+		goto out;
 
 	/* Someone is updating config, assume card has not changed yet */
 	ret = flock(amx->fd, LOCK_SH | LOCK_NB);
@@ -191,10 +194,9 @@ static inline int amux_check_card(struct snd_pcm_amux *amx)
 	if(ret < 0)
 		goto out;
 
-	if(strcmp(card, amx->sname) != 0) {
-		ret = -1;
+	ret = -1;
+	if(strcmp(card, amx->sname) != 0)
 		goto out;
-	}
 
 	ret = 0;
 out:
@@ -493,12 +495,14 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, char const *sname)
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, &amx->io);
 
 	strncpy(amx->sname, sname, sizeof(amx->sname) - 1);
-	snd_pcm_drop(amx->slave);
-	snd_pcm_close(amx->slave);
+	if(amx->slave) {
+		snd_pcm_drop(amx->slave);
+		snd_pcm_close(amx->slave);
+	}
 	ret = snd_pcm_open(&amx->slave, amx->sname, amx->stream, amx->mode);
 	if(ret != 0) {
 		AMUX_ERR("%s: snd_pcm_open error\n", __func__);
-		goto out;
+		goto err;
 	}
 
 	snd_pcm_hw_params_alloca(&hw);
@@ -506,7 +510,7 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, char const *sname)
 	ret = amux_hw_params_refine(amx, hw);
 	if(ret != 0) {
 		AMUX_ERR("%s: amux_hw_params_refine error\n", __func__);
-		goto out;
+		goto close;
 	}
 
 	/* TODO check hw period size */
@@ -532,7 +536,7 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, char const *sname)
 	ret = snd_pcm_sw_params(amx->slave, sw);
 	if(ret != 0) {
 		AMUX_ERR("%s: snd_pcm_sw_params error\n", __func__);
-		goto out;
+		goto close;
 	}
 
 	/* TODO get/set chmaps */
@@ -540,17 +544,40 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, char const *sname)
 	ret = snd_pcm_prepare(amx->slave);
 	if(ret != 0) {
 		AMUX_ERR("%s: snd_pcm_prepare error\n", __func__);
-		goto out;
+		goto close;
 	}
 
 	if(poller_set_slave(amx->poller) != 0) {
 		AMUX_ERR("Can't set poller's new slave\n");
-		return -1;
+		goto close;
 	}
 
-	ret = 0;
-out:
-	return ret;
+	return 0;
+close:
+	snd_pcm_close(amx->slave);
+err:
+	amx->slave = NULL;
+	return -ENODEV;
+}
+
+/**
+ * Check slave PCM is in sane state
+ *
+ * @param amx: Amux master
+ * @return: 1 if slave is disconnected, 0 otherwise
+ */
+static int amux_disconnected(struct snd_pcm_amux *amx)
+{
+	snd_pcm_state_t s;
+
+	if(amx->slave == NULL)
+		return 1;
+
+	s = snd_pcm_state(amx->slave);
+	if((s == SND_PCM_STATE_DISCONNECTED) || (s == SND_PCM_STATE_SUSPENDED))
+		return 1;
+
+	return 0;
 }
 
 /**
@@ -569,8 +596,10 @@ static int amux_switch(struct snd_pcm_amux *amx)
 
 	lseek(amx->fd, SEEK_SET, 0);
 	ret = flock(amx->fd, LOCK_SH | LOCK_NB);
-	if((ret < 0) && (errno == EWOULDBLOCK))
-		return 0;
+	if((ret < 0) && (errno == EWOULDBLOCK)) {
+		ret = 0;
+		goto out;
+	}
 	if(ret < 0)
 		goto out;
 
@@ -581,13 +610,16 @@ static int amux_switch(struct snd_pcm_amux *amx)
 		goto out;
 	}
 
-	if(strcmp(card, amx->sname) == 0) {
-		ret = 0;
+	ret = 0;
+	if(strcmp(card, amx->sname) == 0)
 		goto out;
-	}
 
 	ret = amux_cfg_slave(amx, card);
 out:
+	if(amux_disconnected(amx)) {
+		snd_pcm_ioplug_set_state(&amx->io, SND_PCM_STATE_DISCONNECTED);
+		ret = -ENODEV;
+	}
 	return ret;
 }
 
@@ -625,8 +657,9 @@ static snd_pcm_sframes_t amux_pointer(struct snd_pcm_ioplug *io)
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	if(amux_switch(amx) != 0)
-		return -EPIPE;
+	ret = (snd_pcm_sframes_t)amux_switch(amx);
+	if(ret != 0)
+		return 0;
 
 	if(snd_pcm_state(amx->slave) != SND_PCM_STATE_RUNNING)
 		snd_pcm_prepare(amx->slave);
@@ -678,12 +711,14 @@ static int amux_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 {
 	struct snd_pcm_amux *amx = to_pcm_amux(io);
 	snd_pcm_state_t state;
+	int ret;
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	if(amux_switch(amx) != 0) {
-		AMUX_ERR("%s: PCM slave switching error\n", __func__);
-		return -EPIPE;
+	ret = amux_switch(amx);
+	if(ret != 0) {
+		AMUX_ERR("%s: PCM slave switching error %d\n", __func__, ret);
+		return ret;
 	}
 
 	state = snd_pcm_state(amx->slave);
@@ -727,9 +762,10 @@ static int amux_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfds,
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	if(amux_switch(amx) != 0) {
-		AMUX_ERR("%s: PCM slave switching error\n", __func__);
-		return -EPIPE;
+	ret = amux_switch(amx);
+	if(ret != 0) {
+		AMUX_ERR("%s: PCM slave switching error %d\n", __func__, ret);
+		return ret;
 	}
 
 	ret = poller_poll_revents(amx->poller, pfds, nfds, revents);
@@ -761,8 +797,9 @@ static snd_pcm_sframes_t amux_transfer(struct snd_pcm_ioplug *io,
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
-	if(amux_switch(amx) != 0)
-		return -EPIPE;
+	ret = (snd_pcm_sframes_t)amux_switch(amx);
+	if(ret != 0)
+		return ret;
 
 	/* Check buffers integrity */
 	if(amx->asound_kludge) {
