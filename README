@@ -106,7 +106,11 @@ Limitations
  - There is no control plugin yet (to live switch default control card)
  - There is no mmap support yet
  - It cannot live switch PCM with different rate (it's important to use a
-   softrate plugin).
+   softrate plugin). By default amux ignore all resampling disabling option from
+   user. One can make amux strictly honor the resampling option through the
+   "noresample_ignore" option at the cost of narrowing situation where PCM live
+   switching is possible. This is safe if for example all the cards that can be
+   used has the exact same rate support.
  - It creates a dozen of fake fd and is limited in the number of pollfd a slave
    can have (4 by default) when compiled in default mode (dup-poll-mode).
  - It creates a thread for polling (in thread-mode) at each snd_pcm_open(). I

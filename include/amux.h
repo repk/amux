@@ -89,6 +89,11 @@ struct snd_pcm_amux {
 	 */
 	int fd;
 	/**
+	 * Ignore noresample options, this allows to live switch cards in more
+	 * situations
+	 */
+	unsigned char noresample_ignore;
+	/**
 	 * Does asound library version need workarounds
 	 */
 	unsigned char asound_kludge;

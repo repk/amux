@@ -381,15 +381,17 @@ static int amux_hw_params_refine(struct snd_pcm_amux *amx,
 	 * XXX unfortunately we need to allow resampling (e.g mpv disables
 	 * resampling but keep previous set sample rate value).
 	 */
-	ret = snd_pcm_hw_params_set_rate_resample(slv, shw, 1);
-	if(ret != 0) {
-		AMUX_ERR("Cannot set rate resample\n");
-		goto out;
-	}
-	ret = snd_pcm_hw_params_set_rate_resample(mst, nmhw, 1);
-	if(ret != 0) {
-		AMUX_ERR("Cannot set rate resample\n");
-		goto out;
+	if(amx->noresample_ignore) {
+		ret = snd_pcm_hw_params_set_rate_resample(slv, shw, 1);
+		if(ret != 0) {
+			AMUX_ERR("Cannot set rate resample\n");
+			goto out;
+		}
+		ret = snd_pcm_hw_params_set_rate_resample(mst, nmhw, 1);
+		if(ret != 0) {
+			AMUX_ERR("Cannot set rate resample\n");
+			goto out;
+		}
 	}
 
 	/* Force slave's MMAP INTERLEAVED access */
@@ -942,6 +944,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	char const *pname = NULL, *fpath = NULL;
 	char const *poller_name = POLLER_DEFAULT;
 	snd_config_iterator_t i, next;
+	unsigned noresample_ignore = 1;
 	int ret = -ENOMEM;
 
 	(void)root;
@@ -980,6 +983,15 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 			poller_name = pname;
 			continue;
 		}
+		if(strcmp(id, "noresample_ignore") == 0) {
+			ret = snd_config_get_bool(cfg);
+			if(ret < 0) {
+				SNDERR("Invalid value for noresample_ignore");
+				goto out;
+			}
+			noresample_ignore = ret;
+			continue;
+		}
 		SNDERR("Unknown field %s", id);
 		ret = -EINVAL;
 		goto out;
@@ -1014,6 +1026,9 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 			goto out;
 	}
 
+	if(noresample_ignore)
+		mode &= ~SND_PCM_NO_AUTO_RESAMPLE;
+
 	ret = snd_pcm_open(&amx->slave, amx->sname, stream, mode);
 	if(ret != 0)
 		goto out;
@@ -1025,7 +1040,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	amx->mode = mode;
 	amx->io.poll_fd = -1;
 	amx->io.poll_events = POLLOUT;
-	ret = snd_pcm_ioplug_create(&amx->io, name, stream, mode);
+	amx->noresample_ignore = noresample_ignore;
+	ret = snd_pcm_ioplug_create(&amx->io, name, stream, amx->mode);
 	if(ret != 0)
 		goto out;
 
@@ -1034,6 +1050,18 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 		amux_set_hw_constraints(amx);
 
 	*pcmp = amx->io.pcm;
+
+	/* Configure plugin for no resampling */
+	if(mode & SND_PCM_NO_AUTO_RESAMPLE) {
+		snd_pcm_hw_params_t *shw;
+		unsigned int rate;
+		int dir;
+		snd_pcm_hw_params_alloca(&shw);
+		snd_pcm_hw_params_any(amx->slave, shw);
+		snd_pcm_hw_params_get_rate(shw, &rate, &dir);
+		snd_pcm_ioplug_set_param_minmax(&amx->io,
+				SND_PCM_IOPLUG_HW_RATE, rate, rate);
+	}
 
 	AMUX_DBG("Create new ioplug PCM %p\n", &amx->io);
 out:
