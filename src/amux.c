@@ -920,6 +920,42 @@ out:
 }
 
 /**
+ * Conf helper
+ */
+int amux_dev_arg_or_empty(snd_config_t **dst, snd_config_t *root,
+		snd_config_t *src, snd_config_t *private_data)
+{
+	char const *id;
+	snd_config_t *n;
+	long dev;
+	int ret;
+	char devarg[256];
+
+	(void)root;
+	(void)private_data;
+
+	devarg[0] = '\0';
+	ret = snd_config_search(src, "dev", &n);
+	if(ret < 0)
+		goto out;
+
+	ret = snd_config_get_integer(n, &dev);
+	if(ret < 0)
+		goto out;
+
+	snprintf(devarg, sizeof(devarg) - 1, ",DEV=%ld", dev);
+
+out:
+	ret = snd_config_get_id(src, &id);
+	if(ret < 0)
+		return ret;
+	return snd_config_imake_string(dst, id, devarg);
+}
+SND_DLSYM_BUILD_VERSION(amux_dev_arg_or_empty,
+		SND_CONFIG_DLSYM_VERSION_EVALUATE);
+
+
+/**
  * Amux IO plugin callbacks
  */
 static struct snd_pcm_ioplug_callback amux_ops = {
