@@ -501,6 +501,9 @@ static int amux_cfg_slave(struct snd_pcm_amux *amx, char const *sname)
 		snd_pcm_drop(amx->slave);
 		snd_pcm_close(amx->slave);
 	}
+
+	/* Force to reload config and the load_for_all_cards hook */
+	snd_config_update_free_global();
 	ret = snd_pcm_open(&amx->slave, amx->sname, amx->stream, amx->mode);
 	if(ret != 0) {
 		AMUX_ERR("%s: snd_pcm_open error\n", __func__);
