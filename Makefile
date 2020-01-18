@@ -7,7 +7,8 @@ BUILDDIR=build
 # Amux library
 AML_SRCDIR=src
 AML_BUILDDIR=$(BUILDDIR)/aml
-AML_SRC= amux.c poller/poller.c poller/dupfd.c poller/thread.c
+AML_SRC= amux.c poller/poller.c poller/dupfd.c poller/thread.c \
+	poller/epoller.c
 AML_OBJ=$(AML_SRC:%.c=$(AML_BUILDDIR)/%.o)
 AML_DEPEND=$(AML_SRC:%.c=$(AML_BUILDDIR)/%.d)
 AML_LDFLAGS= -lasound -T $(AML_SRCDIR)/script.ld

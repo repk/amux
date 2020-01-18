@@ -80,12 +80,14 @@ Then test that everything works with:
 Polling mode
 ------------
 
-There is two different ways to poll. The dup-poll-mode creates some mock file
-descriptors using dup2 and the thread-mode uses a thread to poll for slave and
-notifies the user through an eventfd.
+There is three different ways to poll. The first one is simply using epoll to
+multiplex polling on a dynamic list of fd through a single FD. The
+dup-poll-mode creates some mock file descriptors using dup2 and the
+thread-mode uses a thread to poll for slave and notifies the user through an
+eventfd.
 
-The default mode is the dup-poll-mode. To switch to thread-mode, one can specify
-poller in asoundrc such as below :
+The default mode is the epoller but one for example to switch to thread-mode,
+one can specify poller in asoundrc such as below :
 ----------------- 8< ------------------
 pcm.!default {
 	type amux
@@ -95,6 +97,7 @@ pcm.!default {
 ----------------- 8< ------------------
 
 The supported poller configuration strings so far are :
+	- "epoller" for epoll based polling
 	- "dupfd" for dup-poll-mode polling
 	- "thread" for thread-mode polling
 

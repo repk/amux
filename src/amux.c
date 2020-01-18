@@ -184,7 +184,7 @@ static inline int amux_check_card(struct snd_pcm_amux *amx)
 
 	/* Someone is updating config, assume card has not changed yet */
 	ret = flock(amx->fd, LOCK_SH | LOCK_NB);
-	if(ret == EWOULDBLOCK)
+	if(ret != 0)
 		return 0;
 
 	lseek(amx->fd, SEEK_SET, 0);
