@@ -17,7 +17,7 @@ AML=$(if $(AML_SRC),$(BUILDDIR)/libasound_pcm_amux.so)
 # Amux control program
 ACTL_SRCDIR=amuxctl
 ACTL_BUILDDIR=$(BUILDDIR)/actl
-ACTL_SRC=main.c pcmlist.c opt.c
+ACTL_SRC=main.c amuxctl.c pcmlist.c opt.c
 ACTL_OBJ=$(ACTL_SRC:%.c=$(ACTL_BUILDDIR)/%.o)
 ACTL_DEPEND=$(ACTL_SRC:%.c=$(ACTL_BUILDDIR)/%.d)
 ACTL_LDFLAGS= -lasound
