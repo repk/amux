@@ -67,8 +67,10 @@ static int amux_cfg_parse(struct amux_ctx *ctx)
 
 	ret = -EINVAL;
 	str = cfg_get_str(dft, "type");
-	if((str == NULL) || (strcmp(str, "amux") != 0))
+	if((str == NULL) || (strcmp(str, "amux") != 0)) {
+		fprintf(stderr, "Cannot find config for amux plugin\n");
 		goto unref;
+	}
 
 	str = cfg_get_str(dft, "file");
 	if(str == NULL)
@@ -184,8 +186,10 @@ int amux_ctx_init(struct amux_ctx *actx)
 	}
 
 	ret = amux_cfg_parse(actx);
-	if(ret != 0)
+	if(ret != 0) {
+		fprintf(stderr, "Cannot parse config\n");
 		goto clean;
+	}
 
 	return 0;
 clean:
