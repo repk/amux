@@ -17,10 +17,15 @@ AML=$(if $(AML_SRC),$(BUILDDIR)/libasound_pcm_amux.so)
 # Amux control program
 ACTL_SRCDIR=amuxctl
 ACTL_BUILDDIR=$(BUILDDIR)/actl
-ACTL_BIN_SRC=main.c amuxctl.c pcmlist.c opt.c
+ACTL_LIB_SRC=amuxctl.c pcmlist.c
+ACTL_LIB_OBJ=$(ACTL_LIB_SRC:%.c=$(ACTL_BUILDDIR)/%.o)
+ACTL_LIB_DEPEND=$(ACTL_LIB_SRC:%.c=$(ACTL_BUILDDIR)/%.d)
+ACTL_LIB_LDFLAGS= -lasound
+ACTL_LIB=$(if $(ACTL_LIB_SRC),$(BUILDDIR)/libamuxctl.so)
+ACTL_BIN_SRC=main.c opt.c
 ACTL_BIN_OBJ=$(ACTL_BIN_SRC:%.c=$(ACTL_BUILDDIR)/%.o)
 ACTL_BIN_DEPEND=$(ACTL_BIN_SRC:%.c=$(ACTL_BUILDDIR)/%.d)
-ACTL_BIN_LDFLAGS= -lasound
+ACTL_BIN_LDFLAGS= -L$(BUILDDIR) -lamuxctl
 ACTL_BIN=$(if $(ACTL_BIN_SRC),$(BUILDDIR)/amuxctl)
 
 ifeq ($(DEBUG),1)
@@ -47,12 +52,15 @@ define rm-dir
 $(if $(1), (rmdir $(1) > /dev/null 2>&1) || true)
 endef
 
-all: $(AML) $(ACTL_BIN)
+all: $(AML) $(ACTL_LIB) $(ACTL_BIN)
 
 $(AML): $(AML_OBJ)
 	gcc -shared -o $@ $^ $(LDFLAGS) $(AML_LDFLAGS)
 
-$(ACTL_BIN): $(ACTL_BIN_OBJ)
+$(ACTL_LIB): $(ACTL_LIB_OBJ)
+	gcc -shared -o $@ $^ $(LDFLAGS) $(ACTL_LIB_LDFLAGS)
+
+$(ACTL_BIN): $(ACTL_BIN_OBJ) $(ACTL_LIB)
 	gcc -o $@ $^ $(LDFLAGS) $(ACTL_BIN_LDFLAGS)
 
 $(AML_BUILDDIR)/%.o: $(AML_SRCDIR)/%.c
@@ -70,6 +78,9 @@ amlclean:
 	$(call rm-dir,$(AML_BUILDDIR))
 
 actlclean:
+	$(call rm-file,$(ACTL_LIB_OBJ))
+	$(call rm-file,$(ACTL_LIB_DEPEND))
+	$(call rm-dir,$(call reverse,$(dir $(ACTL_LIB_OBJ))))
 	$(call rm-file,$(ACTL_BIN_OBJ))
 	$(call rm-file,$(ACTL_BIN_DEPEND))
 	$(call rm-dir,$(call reverse,$(dir $(ACTL_BIN_OBJ))))
@@ -79,6 +90,7 @@ amldistclean: amlclean
 	$(call rm-file,$(AML))
 
 actldistclean: actlclean
+	$(call rm-file,$(ACTL_LIB))
 	$(call rm-file,$(ACTL_BIN))
 
 .PHONY: clean
