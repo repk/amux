@@ -19,12 +19,15 @@ int main(int argc, char *argv[])
 
 	actx = amux_ctx_new();
 	if(actx == NULL) {
+		perror("amux_ctx_new");
 		goto out;
 	}
 
 	ret = amux_ctx_init(actx);
-	if(ret != 0)
+	if(ret != 0) {
+		fprintf(stderr, "Cannot initialize amux context\n");
 		goto out;
+	}
 
 	switch(opt.act) {
 	case AA_LIST:
