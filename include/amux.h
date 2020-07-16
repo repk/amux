@@ -81,6 +81,11 @@ struct snd_pcm_amux {
 	 */
 	snd_pcm_uframes_t boundary;
 	/**
+	 * Keep slave tstamp type so we can reset it at swparams
+	 * This params cannot be changed at runtime
+	 */
+	snd_pcm_tstamp_type_t slave_tstamp;
+	/**
 	 * Current open mode
 	 */
 	int mode;

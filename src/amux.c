@@ -231,6 +231,7 @@ static int amux_start(struct snd_pcm_ioplug *io)
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
+
 	if(amux_check_card(amx) != 0)
 		return -EPIPE;
 
@@ -340,6 +341,14 @@ static int amux_sw_params(snd_pcm_ioplug_t *io, snd_pcm_sw_params_t *parm)
 
 	AMUX_DBG("%s: enter PCM(%p)\n", __func__, io);
 
+	/* Reset tstamp type */
+	ret = snd_pcm_sw_params_set_tstamp_type(amx->slave, parm,
+			amx->slave_tstamp);
+	if(ret < 0) {
+		AMUX_ERR("%s: Cannot set slave tstamp params\n", __func__);
+		goto out;
+	}
+
 	ret = snd_pcm_sw_params(amx->slave, parm);
 	if(ret < 0) {
 		AMUX_ERR("%s: Cannot configure slave sw params\n", __func__);
@@ -363,6 +372,7 @@ static int amux_hw_params_refine(struct snd_pcm_amux *amx,
 {
 	snd_pcm_t *mst = amx->io.pcm, *slv = amx->slave;
 	snd_pcm_hw_params_t *shw, *nmhw;
+	snd_pcm_sw_params_t *sw;
 	snd_pcm_access_t acc;
 	snd_pcm_format_t fmt;
 	snd_pcm_uframes_t bsz;
@@ -473,6 +483,15 @@ static int amux_hw_params_refine(struct snd_pcm_amux *amx,
 	ret = snd_pcm_hw_params(slv, shw);
 	if(ret != 0) {
 		AMUX_ERR("Cannot set slave's hw params\n");
+		goto out;
+	}
+
+	snd_pcm_sw_params_alloca(&sw);
+	snd_pcm_sw_params_current(slv, sw);
+	ret = snd_pcm_sw_params_get_tstamp_type(sw, &amx->slave_tstamp);
+	if (ret != 0) {
+		AMUX_ERR("%s: snd_pcm_sw_params_get_tstamp_type error\n",
+				__func__);
 		goto out;
 	}
 
