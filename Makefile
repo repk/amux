@@ -30,7 +30,7 @@ ACTL_BIN=$(if $(ACTL_BIN_SRC),$(BUILDDIR)/amuxctl)
 
 ifeq ($(DEBUG),1)
 ACTL_CFLAGS+=-ggdb -fno-omit-frame-pointer -fsanitize=address -fsanitize=leak
-ACTL_LDFLAGS:=-lasan $(ACTL_LDFLAGS)
+ACTL_BIN_LDFLAGS:=-lasan $(ACTL_BIN_LDFLAGS)
 endif
 
 define _reverse
