@@ -1079,6 +1079,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(amux) {
 	amx->mode = mode;
 	amx->io.poll_fd = -1;
 	amx->io.poll_events = POLLOUT;
+	amx->io.flags = SND_PCM_IOPLUG_FLAG_MONOTONIC;
 	amx->noresample_ignore = noresample_ignore;
 	ret = snd_pcm_ioplug_create(&amx->io, name, stream, amx->mode);
 	if(ret != 0)
